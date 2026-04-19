@@ -1,0 +1,34 @@
+{
+  "name": "inmob-back",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Backend SaaS multi-tenant para inmobiliarias",
+  "author": "Joaquin Tejerina <joaquintejerina19@hotmail.com>",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev:api": "pnpm --filter @inmob/api dev",
+    "build": "pnpm run --parallel build",
+    "build:api": "pnpm --filter @inmob/api build",
+    "lint": "biome check .",
+    "lint:fix": "biome check --apply .",
+    "format": "biome format --write .",
+    "db:migrate": "pnpm --filter @inmob/database migration:up",
+    "db:migrate:create": "pnpm --filter @inmob/database migration:create",
+    "db:seed": "pnpm --filter @inmob/database seed",
+    "docker:up": "docker-compose -f docker/docker-compose.yml up -d",
+    "docker:down": "docker-compose -f docker/docker-compose.yml down",
+    "docker:logs": "docker-compose -f docker/docker-compose.yml logs -f"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
+    "typescript": "^6.0.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild", "@clerk/shared"]
+  }
+}
