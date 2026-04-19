@@ -4,9 +4,10 @@
 
 ![Node](https://img.shields.io/badge/Node-≥24.0.0-brightgreen)
 ![pnpm](https://img.shields.io/badge/pnpm-10.33.0-orange)
-![Fastify](https://img.shields.io/badge/Fastify-5.x-black)
+![Fastify](https://img.shields.io/badge/Fastify-5.8.5-black)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-blue)
-![TypeScript](https://img.shields.io/badge/TypeScript-6.x-blue)
+![TypeScript](https://img.shields.io/badge/TypeScript-6.0.3-blue)
+![MikroORM](https://img.shields.io/badge/MikroORM-6.6.13-red)
 
 ---
 
@@ -16,17 +17,18 @@
 |------|-----------|---------|
 | Runtime | Node.js | >=24.0.0 |
 | Package manager | pnpm (monorepo workspaces) | 10.33.0 |
-| Framework HTTP | Fastify | ^5.3.3 |
-| ORM | MikroORM | ^6.4.3 |
+| Framework HTTP | Fastify | 5.8.5 |
+| ORM | MikroORM | 6.6.13 ⚠️ |
 | Base de datos | PostgreSQL (Docker) | 17-alpine |
-| Auth (producción) | Clerk | ^1.27.2 |
-| Auth (desarrollo) | JWT local — jose (HS256) | ^6.2.2 |
-| Hashing contraseñas | bcryptjs | ^3.0.3 |
-| Validación de schemas | Zod | ^3.24.0 |
-| Linter / Formatter | Biome | ^2.4.10 |
-| TypeScript | TypeScript | ^6.0.2 |
+| Auth (MVP) | JWT local — jose (HS256) | 6.2.2 |
+| Hashing contraseñas | bcryptjs | 3.0.3 |
+| Validación de schemas | Zod | 3.25.76 |
+| Linter / Formatter | Biome | 2.4.10 |
+| TypeScript | TypeScript | 6.0.3 |
 | Logging | Pino + pino-pretty (dev) | built-in Fastify |
-| Seguridad HTTP | @fastify/helmet + @fastify/cors | ^13.0.1 / ^10.0.2 |
+| Seguridad HTTP | @fastify/helmet + @fastify/cors | 13.x / 10.x |
+
+> ⚠️ **MikroORM 6.6.13** — La documentación oficial indica que v6 ya no recibe mantenimiento activo. La versión actual es v7.0. Pendiente de migración.
 
 ---
 
