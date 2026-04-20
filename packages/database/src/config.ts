@@ -16,9 +16,12 @@ import {
   PortalConnection,
 } from './entities/index.js';
 
+const isSsl = process.env['DATABASE_URL']?.includes('sslmode=require');
+
 export default defineConfig({
   driver: PostgreSqlDriver,
   clientUrl: process.env['DATABASE_URL'],
+  driverOptions: isSsl ? { connection: { ssl: { rejectUnauthorized: false } } } : {},
   metadataProvider: TsMorphMetadataProvider,
   entities: [Tenant, User, Subscription, Property, Contact, Lead, Agenda, PortalConnection],
   debug: process.env['NODE_ENV'] === 'development',
