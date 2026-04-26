@@ -71,7 +71,7 @@ async function createNeonDatabase(dbName: string): Promise<string> {
     throw new Error(`Neon API error (${res.status}): ${body}`);
   }
 
-  return `${dbHost}/${dbName}?sslmode=require&channel_binding=require`;
+  return `${dbHost}/${dbName}?sslmode=require`;
 }
 
 // ─── Migrations en la nueva DB ────────────────────────────────────────────────
