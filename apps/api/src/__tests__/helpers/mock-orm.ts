@@ -92,10 +92,12 @@ export function createMockEm(overrides: Partial<MockEm> = {}): MockEm {
   return em;
 }
 
-export function createMockOrm(em: MockEm) {
+export type MockOrm = { em: MockEm; close: () => Promise<void> };
+
+export function createMockOrm(em: MockEm): MockOrm {
   return {
     em,
-    close: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined) as () => Promise<void>,
   };
 }
 

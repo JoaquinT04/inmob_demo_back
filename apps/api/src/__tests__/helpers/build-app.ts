@@ -1,11 +1,21 @@
 import { vi } from 'vitest';
+import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../../app.js';
 import {
   createMockOrm,
   createPlatformEm,
   createTenantEm,
   type MockEm,
+  type MockOrm,
 } from './mock-orm.js';
+
+type TestAppResult = {
+  app: FastifyInstance;
+  tenantOrm: MockOrm;
+  platformOrm: MockOrm;
+  tenantEm: MockEm;
+  platformEm: MockEm;
+};
 
 vi.mock('@mikro-orm/core', async () => {
   const actual = await vi.importActual('@mikro-orm/core');
@@ -27,7 +37,7 @@ vi.mock('../../lib/connection-manager.js', () => ({
 export async function buildTestApp(opts: {
   platformEm?: MockEm;
   tenantEm?: MockEm;
-} = {}) {
+} = {}): Promise<TestAppResult> {
   const { connectionManager } = await import('../../lib/connection-manager.js');
 
   const tenantEm = opts.tenantEm ?? createTenantEm();
