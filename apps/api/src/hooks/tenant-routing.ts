@@ -17,15 +17,17 @@ export function registerTenantRoutingHook(app: FastifyInstance): void {
     // Portal endpoints usan platform DB directamente — no necesitan tenant routing
     if (request.url.startsWith('/api/portal')) return;
     if (request.url.startsWith('/api/register')) return;
-    if (request.url === '/health') return;
+    if (request.url.startsWith('/health')) return;
 
     // 1. Header X-Tenant (dev + frontend sin wildcard DNS)
     const headerTenant = request.headers['x-tenant'] as string | undefined;
 
-    // 2. Subdominio del hostname
+    // 2. Subdominio del hostname — solo si el host es un subdominio real del APP_DOMAIN
+    const appDomain = process.env['APP_DOMAIN'] ?? '';
     const host = request.hostname;
-    const parts = host.split('.');
-    const hostSubdomain = parts.length >= 2 && parts[0] !== 'www' ? parts[0] : null;
+    const hostSubdomain = (appDomain && host.endsWith(`.${appDomain}`))
+      ? host.slice(0, host.length - appDomain.length - 1)
+      : null;
 
     const subdomain = headerTenant ?? hostSubdomain;
 
