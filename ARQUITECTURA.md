@@ -1,636 +1,408 @@
-# Arquitectura de inmob_demo_back — Guía técnica personal
+# Arquitectura de inmob_demo_back — Guía técnica
 
-Este documento es tuyo. Explica **por qué** cada decisión técnica fue tomada, cómo funciona cada sistema internamente, y qué trampas encontramos en el camino. No es un README para terceros — es el mapa mental del proyecto.
+Este documento explica **por qué** cada decisión técnica fue tomada, cómo funciona cada sistema internamente y qué trampas encontramos. Es el mapa mental del proyecto — para leer antes de tocar código.
 
 ---
 
-## 1. Estructura del monorepo
+## 1. Modelo multi-tenant: DB por tenant
+
+### Qué es y por qué
+
+Cada inmobiliaria tiene su **propia base de datos PostgreSQL aislada**. No hay columna `tenant_id`, no hay `@Filter byTenant`, no hay `WHERE tenant_id = ?` en ninguna query.
+
+```
+                    ┌──────────────────┐
+                    │   Platform DB    │   inmob_platform
+                    │  TenantRegistry  │   (un registro por tenant)
+                    │  HubProperty     │   (índice cross-tenant)
+                    └────────┬─────────┘
+                             │ databaseUrl por tenant
+          ┌──────────────────┼──────────────────┐
+          ▼                  ▼                  ▼
+   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+   │  DB: demo   │   │  DB: garcia │   │  DB: lopez  │
+   │  (Neon)     │   │  (Neon)     │   │  (Neon)     │
+   │  Tenant     │   │  Tenant     │   │  Tenant     │
+   │  Users      │   │  Users      │   │  Users      │
+   │  Properties │   │  Properties │   │  Properties │
+   └─────────────┘   └─────────────┘   └─────────────┘
+```
+
+**Ventajas sobre el modelo de DB compartida:**
+- Aislamiento total: una query mal escrita nunca puede leer datos de otro tenant.
+- Migrations independientes: se pueden hacer upgrades de schema por tenant sin bloquear a todos.
+- Backup/restore por tenant: fácil de implementar.
+- Cumplimiento de privacidad: datos nunca coexisten en la misma tabla.
+
+---
+
+## 2. Estructura del monorepo
 
 ```
 inmob_demo_back/
 ├── apps/
-│   └── api/              → @inmob/api       (Fastify server, rutas, middleware)
+│   └── api/              → @inmob/api        (Fastify server, rutas, middleware)
 ├── packages/
-│   ├── database/         → @inmob/database  (entidades MikroORM, migraciones, seeds)
-│   └── shared/           → @inmob/shared    (tipos, constantes, schemas — isomórfico)
+│   ├── database/         → @inmob/database   (entidades + migraciones de tenant DB)
+│   ├── platform/         → @inmob/platform   (entidades + migraciones de platform DB + provisioner)
+│   └── shared/           → @inmob/shared     (tipos, constantes, schemas — isomórfico)
 └── pnpm-workspace.yaml
 ```
 
-**Por qué monorepo con pnpm workspaces:**
-
-- `@inmob/shared` se importa desde el API y también lo va a importar el frontend. Un solo lugar para tipos TypeScript y schemas Zod → nunca hay drift entre front y back.
-- `@inmob/database` exporta las entidades MikroORM. Si mañana agregás un CLI de seed o una lambda, importan el mismo paquete sin duplicar modelos.
-- pnpm workspaces con `catalog:` (pnpm 10) permite definir versiones de dependencias una vez en el root `package.json` y referenciarlas desde los paquetes hijos. Si actualizás Zod, lo hacés en un lugar.
-
----
-
-## 2. Runtime y módulos ESM
-
-El proyecto usa **ESM nativo** (`"type": "module"` en todos los `package.json`). Esto significa:
-
-- Todos los imports en `.ts` llevan extensión `.js` (el compilador TS no la cambia, Node la resuelve al `.js` compilado).
-- `__dirname` y `__filename` no existen → hay que reconstruirlos con `import.meta.url`:
-  ```typescript
-  import { dirname } from 'path';
-  import { fileURLToPath } from 'url';
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  ```
-- **tsx** ejecuta TypeScript directamente con esbuild sin compilar a disco. Rápido en dev. Pero esbuild no emite decorator metadata — tiene consecuencias importantes (ver sección MikroORM).
+**Por qué 4 paquetes:**
+- `@inmob/shared`: importado por API y frontend. Un solo lugar para tipos TypeScript y schemas Zod. Nunca hay drift entre front y back.
+- `@inmob/database`: entidades de la DB de cada tenant (Tenant, User, Property, Contact, etc.).
+- `@inmob/platform`: entidades de la Platform DB (TenantRegistry, HubProperty) y el provisioner que crea nuevas inmobiliarias.
+- `@inmob/api`: el servidor Fastify. Importa los tres paquetes anteriores.
 
 ---
 
-## 3. Sistema de autenticación
+## 3. Subdomain routing hook
 
-### 3.1 El flujo completo
+### El problema
+
+Con DB-per-tenant, cada request debe usar el ORM de la DB correcta. El hook `apps/api/src/hooks/tenant-routing.ts` resuelve esto automáticamente en cada request.
+
+### Cómo funciona
+
+```
+Request → onRequest hook
+  │
+  ├─ ¿Es /api/portal, /api/register, /health? → skip (no necesitan tenant)
+  │
+  ├─ ¿Tiene header X-Tenant: demo? → subdomain = "demo"  (dev / frontend sin DNS)
+  │
+  ├─ ¿No tiene X-Tenant? → tomar subdomain del hostname (demo.app.com → "demo")
+  │
+  ├─ Buscar en Platform DB: TenantRegistry.where(subdomain = "demo")
+  │     → No existe: 404 TENANT_NOT_FOUND
+  │     → Existe: registry.databaseUrl = "postgres://..."
+  │
+  └─ request.orm = connectionManager.get(registry.databaseUrl)
+       (ORM cacheado — no reconecta si ya existe)
+```
+
+### Por qué el header X-Tenant tiene prioridad
+
+En producción, el subdominio viene del DNS wildcard (`*.app.com`). En desarrollo local, no se pueden usar subdominios reales. El header `X-Tenant: demo` es el sustituto — el frontend lo envía en todos los requests y la API funciona igual que en producción.
+
+### Código relevante
+
+```typescript
+// apps/api/src/hooks/tenant-routing.ts
+const headerTenant = request.headers['x-tenant'] as string | undefined;
+const host = request.hostname;
+const parts = host.split('.');
+const hostSubdomain = parts.length >= 2 && parts[0] !== 'www' ? parts[0] : null;
+const subdomain = headerTenant ?? hostSubdomain;  // header tiene prioridad
+```
+
+---
+
+## 4. TenantConnectionManager (connection caching)
+
+`apps/api/src/lib/connection-manager.ts` mantiene un `Map<databaseUrl, MikroORM>`. Cuando llega un request para "demo", la primera vez crea el ORM y lo cachea. Las siguientes requests del mismo tenant reutilizan el mismo ORM — mismo pool de conexiones, sin overhead de reconexión.
+
+```typescript
+class TenantConnectionManager {
+  private cache = new Map<string, MikroORM>();
+
+  async get(databaseUrl: string): Promise<MikroORM> {
+    if (this.cache.has(databaseUrl)) return this.cache.get(databaseUrl)!;
+    const orm = await MikroORM.init({ clientUrl: databaseUrl, ... });
+    this.cache.set(databaseUrl, orm);
+    return orm;
+  }
+
+  async closeAll(): Promise<void> {
+    for (const orm of this.cache.values()) await orm.close();
+  }
+}
+```
+
+El `closeAll()` se llama en el graceful shutdown del proceso para no dejar conexiones colgadas.
+
+---
+
+## 5. Dos ORMs en paralelo
+
+`apps/api/src/app.ts` decora la instancia Fastify con dos ORMs:
+
+| ORM | Decorador | Qué DB apunta | Para qué se usa |
+|-----|-----------|---------------|-----------------|
+| `platformOrm` | `app.platformOrm` | Platform DB | TenantRegistry, HubProperty, billing |
+| `orm` (legacy) | `app.orm` | Tenant DB de dev | Solo usado en startup/seed |
+| `request.orm` | por request | DB del tenant activo | Todos los handlers de negocio |
+
+Regla práctica para el frontend: **no necesita saber nada de esto**. Solo manda el header `X-Tenant` y el backend resuelve todo.
+
+Regla para el código backend:
+- Handlers de negocio (propiedades, contactos, etc.): usar `request.orm.em.fork()`
+- Handlers de portal y billing: usar `app.platformOrm.em.fork()`
+
+---
+
+## 6. Sistema de autenticación
+
+### Flujo completo
 
 ```
 POST /api/auth/login
-  body: { email, tenantSlug, password }
-    → busca User por email + tenant.slug
+  headers: { X-Tenant: demo }
+  body: { email, password }
+    → El hook ya puso request.orm = ORM del tenant "demo"
+    → busca User por email en esa DB
     → bcrypt.compare(password, user.passwordHash)
-    → signToken({ userId, tenantId })          ← jose HS256
+    → signToken({ userId, subdomain: "demo" })   ← jose HS256
     → devuelve { token, user, permissions }
 
 Requests autenticados:
   Authorization: Bearer <token>
+  X-Tenant: demo
     → requireAuth middleware
-    → jwtVerify(token, APP_SECRET)             ← jose
-    → request.auth = { userId, tenantId }
+    → jwtVerify(token, APP_SECRET)
+    → request.auth = { userId, subdomain: "demo" }
 ```
 
-### 3.2 Por qué jose (no jsonwebtoken)
+### Por qué subdomain en el JWT (no tenantId)
 
-`jsonwebtoken` usa `crypto` síncrono de Node y no es amigable con ESM. `jose` es moderno, async-first, compatible con Web Crypto API, y tiene soporte nativo para ESM. El algoritmo es HS256 (HMAC-SHA256) — simétrico, suficiente para MVP.
+El JWT ahora lleva `{ userId, subdomain }` en lugar de `{ userId, tenantId }`. El `subdomain` es suficiente para identificar el tenant — el hook ya tiene el ORM resuelto de todos modos. Además, el subdomain es legible para debug, mientras que un UUID no lo es.
 
-### 3.3 AuthContext
+### Modo desarrollo (`requireAuthDev`)
 
-```typescript
-interface AuthContext {
-  userId: string;    // ID interno de la DB
-  tenantId: string;  // ID del tenant → aísla todos los datos
-  externalId?: string; // Reservado para Clerk/Auth0 (sub del JWT externo)
-}
-```
-
-Todo handler con `requireAuth` tiene `request.auth` garantizado. Si mañana cambiás a Clerk, solo cambia la función `verifyAppToken` — los handlers no se tocan porque `request.auth` mantiene la misma forma.
-
-### 3.4 Modo desarrollo (`requireAuthDev`)
-
-Headers especiales para no necesitar token en curl/Postman:
+Headers especiales para tests sin hacer login:
 ```bash
-curl -H "x-dev-user-id: <id>" -H "x-dev-tenant-id: <id>" http://localhost:3001/api/...
+curl -H "x-dev-user-id: <id>" -H "x-dev-subdomain: demo" http://localhost:3001/api/...
 ```
-Solo activo cuando `NODE_ENV=development`. La función `requireAuthDev` hace early-return si los headers están presentes, si no cae a `requireAuth` normal.
+Solo activo cuando `NODE_ENV=development`.
 
 ---
 
-## 4. MikroORM — Decisiones profundas
+## 7. Entidades — dos categorías
 
-### 4.1 Por qué TsMorphMetadataProvider
+### Platform DB (`@inmob/platform`)
 
-MikroORM necesita metadata de los decorators TypeScript para saber cómo mapear clases a tablas: tipos de columnas, relaciones, etc.
+| Entidad | Tabla | Descripción |
+|---------|-------|-------------|
+| `TenantRegistry` | `tenant_registry` | Una fila por inmobiliaria. Tiene `subdomain`, `databaseUrl`, `plan`, billing state. |
+| `HubProperty` | `hub_properties` | Índice cross-tenant de propiedades publicadas. Desnormalizado para búsquedas rápidas. |
 
-La forma clásica (`ReflectMetadataProvider`) requiere `emitDecoratorMetadata: true` en tsconfig, que hace que tsc emita código extra con `Reflect.metadata(...)`. **tsx (que usamos en dev) usa esbuild — esbuild ignora completamente `emitDecoratorMetadata`**. Resultado: MikroORM no podría leer los metadatos en runtime.
+### Tenant DB (`@inmob/database`)
 
-La solución: `TsMorphMetadataProvider` de `@mikro-orm/reflection`. Este provider **lee los archivos `.ts` directamente** (no el JS compilado) usando ts-morph para extraer tipos estáticos. En vez de depender de metadatos en runtime, parsea el código fuente en tiempo de inicialización. Genera un caché en `temp/` (`.json` por entidad) para no re-parsear en cada arranque.
+| Entidad | Tabla | Descripción |
+|---------|-------|-------------|
+| `Tenant` | `tenants` | Una sola fila por DB. Nombre, config, permissionConfig. |
+| `User` | `users` | Usuarios de esa inmobiliaria. Roles, grupos, overrides. |
+| `Property` | `properties` | Propiedades. |
+| `Contact` | `contacts` | Contactos / clientes / propietarios. |
+| `Lead` | `leads` | Oportunidades CRM con historial (JSON). |
+| `Agenda` | `agenda_events` | Eventos de calendario. |
+| `PortalConnection` | `portal_connections` | Credenciales de portales externos (Zonaprop, ML). |
 
-```typescript
-import { TsMorphMetadataProvider } from '@mikro-orm/reflection';
-
-export default defineConfig({
-  metadataProvider: TsMorphMetadataProvider,
-  // ...
-});
-```
-
-**Implicación importante:** Si borrás los archivos en `temp/` (o no existen), MikroORM re-parsea todas las entidades al arrancar. Esto es lento la primera vez (~2-3 segundos) pero después usa el caché.
-
-### 4.2 Identity Map y el bug del "skeleton entity"
-
-Este fue el bug más sutil del proyecto. Entenderlo es clave para cualquier app MikroORM.
-
-**Qué es el Identity Map:**
-MikroORM tiene un "Unit of Work" pattern. Cada `em` (entity manager) mantiene un mapa de entidades ya cargadas, indexadas por clase + PK. Si pedís `em.findOne(Tenant, id)` y ese tenant ya está en el mapa, **no hace query a la DB — devuelve el objeto del mapa**.
-
-**El problema:**
-Cuando cargás un `User` con `em.findOne(User, ...)`, MikroORM necesita construir la referencia a `Tenant` (porque `User` tiene `@ManyToOne(() => Tenant)`). Para no hacer una query extra, crea un **skeleton entity**: un objeto `Tenant` con solo el PK cargado y el resto de las propiedades como undefined/defaults de clase.
-
-Luego, si en el mismo `em` hacés `em.findOne(Tenant, { id: tenantId })`, MikroORM ve el skeleton en el identity map y lo devuelve **sin hacer query**. Tenés un Tenant "válido" pero con `name: undefined`, `slug: undefined`, etc.
-
-**Dónde apareció:**
-En `POST /api/settings/users` (invitar usuario). El request pasa por `requireAuth` (que carga el User del token) y luego el handler necesita el Tenant para crear el nuevo User. El tenant cargado era un skeleton.
-
-**La solución:**
-```typescript
-let tenant = await em.findOne(Tenant, { id: tenantId });
-if (!tenant || !tenant.name) {
-  // skeleton detectado → forzar recarga desde DB
-  tenant = await em.refresh(tenant ?? em.getReference(Tenant, tenantId))
-            ?? await em.findOneOrFail(Tenant, { id: tenantId });
-}
-```
-
-`em.refresh(entity)` fuerza una query a la DB aunque el entity esté en el identity map. Es el antídoto correcto para skeletons.
-
-### 4.3 Por qué `em.fork()`
-
-Cada request HTTP **debe usar su propio fork del entity manager**. El `app.orm.em` es el EM raíz, que no debería usarse directamente en handlers concurrentes (su identity map se contaminaría entre requests).
-
-`em.fork()` crea un EM hijo con identity map propio, hereda la conexión del pool pero tiene estado independiente. Al terminar el handler, el fork se descarta junto con todos sus objetos en memoria.
+**No hay `@Filter byTenant`**: era necesario en el modelo de DB compartida para aislar datos por `tenant_id`. Con DB-per-tenant, esa columna y ese filtro no existen. Las queries son directas:
 
 ```typescript
-const em = app.orm.em.fork();  // ← siempre en el handler, nunca el em raíz
-```
+// Antes (DB compartida):
+em.find(Property, { tenant: { id: tenantId } })
 
-### 4.4 Relación OneToOne — quién es el "owning side"
-
-En MikroORM (y en SQL), en una relación OneToOne **uno de los dos lados tiene la FK en su tabla**. Ese es el "owning side". El otro lado es el "inverse side".
-
-```
-subscriptions table: tiene columna tenant_id (FK → tenants.id)
-```
-
-Por eso:
-- **Owning side** = `Subscription` → `@OneToOne(() => Tenant, { inversedBy: 'subscription', ref: true })`
-- **Inverse side** = `Tenant` → `@OneToOne(() => Subscription, { mappedBy: 'tenant', nullable: true })`
-
-Regla: `inversedBy` va en el lado que tiene la FK. `mappedBy` va en el lado que no tiene FK.
-
-Si los ponés al revés, MikroORM genera migraciones incorrectas o lanza errores de "owning side not set".
-
-### 4.5 `type: 'string'` en campos enum
-
-MikroORM, si no le decís el tipo explícitamente, intenta inferirlo del tipo TypeScript. Para campos con tipo `string` pero que en la entidad son enums (`PropertyType`, `OperationType`, etc.), la inferencia puede generar `varchar` con CHECK constraints o incluso `enum` nativo de PostgreSQL.
-
-Para evitar inconsistencias, todos los campos que son strings pero de tipo enum llevan `type: 'string'` explícito:
-
-```typescript
-@Prop({ type: 'string' })
-type!: PropertyType;
-```
-
-Esto le dice a MikroORM: "en la DB es varchar, sin magia extra".
-
-### 4.6 `createInitialMigration()` vs `createMigration()`
-
-`createMigration()` compara el estado actual de la DB contra los metadatos de las entidades y genera el **diff**. Si la DB está vacía (primera vez), el diff puede salir vacío dependiendo de cómo el migrator detecta el estado base.
-
-`createInitialMigration()` ignora el estado de la DB y genera el SQL completo para crear todas las tablas desde cero. Ideal para el primer migration de un proyecto nuevo.
-
-```bash
-# Primera vez: usar --initial
-pnpm db:migrate:create init --initial
-
-# Cambios posteriores: usar el nombre
-pnpm db:migrate:create add-campo-xyz
+// Ahora (DB por tenant):
+em.find(Property, {})   // la DB solo tiene datos de un tenant
 ```
 
 ---
 
-## 5. Sistema de permisos — 5 capas
+## 8. Provisioner — crear una nueva inmobiliaria
 
-Inspirado en el sistema de grupos de Odoo. Es el corazón del RBAC de la app.
+`packages/platform/src/provisioner/provision.ts` hace todo el onboarding en un solo call:
 
-### 5.1 Las capas explicadas
+```
+provision(input, platformOrm)
+  │
+  ├─ 1. Crear DB Neon via API REST (NEON_API_KEY)
+  │      → Retorna databaseUrl de la nueva DB
+  │
+  ├─ 2. Conectar a esa DB y ejecutar migraciones
+  │      → Crea todas las tablas del schema de tenant
+  │
+  ├─ 3. Crear fila Tenant en la nueva DB
+  │
+  ├─ 4. Crear User owner con bcrypt(password)
+  │
+  ├─ 5. Registrar en Platform DB: TenantRegistry
+  │      → subdomain, name, databaseUrl, ownerEmail, plan: FREE, trialEndsAt
+  │
+  └─ 6. Firmar JWT { userId, subdomain }
+         → Retorna { subdomain, databaseUrl, ownerId, token }
+```
+
+En **desarrollo local**, Neon no está disponible. El seed de desarrollo crea manualmente el tenant "demo" en la Docker DB local y lo registra en la platform DB.
+
+---
+
+## 9. MikroORM — decisiones profundas
+
+### TsMorphMetadataProvider (no ReflectMetadata)
+
+MikroORM necesita metadata de los decorators. La forma clásica (`ReflectMetadataProvider`) requiere `emitDecoratorMetadata: true` en tsconfig, que hace que tsc emita `Reflect.metadata(...)`. **Problema**: tsx (que usamos en dev) usa esbuild, que ignora `emitDecoratorMetadata`.
+
+Solución: `TsMorphMetadataProvider` de `@mikro-orm/reflection` **lee los archivos `.ts` directamente** con ts-morph en vez de depender de metadata en runtime. Genera un caché en `temp/` la primera vez (~2-3 segundos) y lo reutiliza.
+
+**Implicación para connection-manager**: al crear ORMs dinámicos para los tenants, también se usa `TsMorphMetadataProvider`.
+
+### `em.fork()` — obligatorio en cada handler
+
+```typescript
+const em = request.orm.em.fork();  // ← siempre, nunca usar el em raíz
+```
+
+`em.fork()` crea un entity manager hijo con identity map propio. Requests concurrentes no se contaminan entre sí. Al terminar el handler, el fork se descarta.
+
+### `& Opt` en campos con defaults
+
+MikroORM requiere que los campos con defaults en la entidad tengan el tipo marcado como `T & Opt` para no ser requeridos en `em.create()`:
+
+```typescript
+@Property({ default: false })
+cancelAtPeriodEnd: boolean & Opt = false;  // ← & Opt es necesario
+```
+
+Sin `& Opt`, TypeScript se queja de que `cancelAtPeriodEnd` es required en `em.create(TenantRegistry, { ... })`.
+
+---
+
+## 10. Sistema de permisos (5 capas)
+
+Inspirado en el sistema de grupos de Odoo.
 
 ```
 Capa 1: base:user (implícita, siempre)
   → property:read, contact:read, hub:read
-  → Todo usuario autenticado tiene esto. No se puede quitar.
+  → No se puede quitar.
 
 Capa 2: RolePermissions[rol] (baseline del rol)
-  → captador: property:create, property:read, property:update, hub:read
+  → captador: property:create, read, update, hub:read
   → agente: + contact:*, crm:*, agenda:*, hub:publish
-  → coordinador: + property:delete, contact:delete, report:*, user:read
+  → coordinador: + property:delete, report:*
   → administrador: + todo excepto billing
   → owner: billing incluido
 
-Capa 3: tenant.permissionConfig.roleOverrides (el admin configura por rol)
-  → Ejemplo: para todos los "agente" en esta inmobiliaria, agregar report:read
+Capa 3: tenant.permissionConfig.roleOverrides (admin configura por rol)
   → Stored en Tenant.permissionConfig (JSON en DB)
-  → grant/deny por rol, sin tocar la baseline global
+  → grant/deny por rol para toda la inmobiliaria
+  → Configurable desde PUT /api/settings/permissions/roles
 
 Capa 4: user.groups (grupos adicionales del usuario)
   → Un captador con grupo 'report:viewer' puede ver reportes
-  → Los grupos tienen herencia: property:manager implica property:editor implica property:viewer
-  → Stored en User.groups (JSON array en DB)
+  → Los grupos tienen herencia: property:manager → property:editor → property:viewer
+  → Stored en User.groups (JSON array)
 
 Capa 5: user.permissionOverrides (máxima granularidad, deny gana sobre todo)
-  → grant: ['crm:read'] — dar un permiso puntual a este usuario
-  → deny: ['property:delete'] — bloquear un permiso aunque el rol lo tenga
+  → grant: ['crm:read']
+  → deny: ['property:delete']
   → deny tiene prioridad absoluta (se aplica al final)
 ```
 
-### 5.2 Código de resolución
+**Por qué Set:** operaciones O(1) para has/add/delete. El set se convierte a array solo para serializar.
+
+**Menú como permisos deny:**
 
 ```typescript
-// apps/api/src/utils/permissions.ts
-export function resolvePermissions(user: UserLike, tenantConfig?): Set<Permission> {
-  // Capa 1
-  const effective = resolveGroupPermissions(SG.BASE_USER);
-
-  // Capa 2
-  const role = user.roles[0];
-  for (const p of RolePermissions[role] ?? []) effective.add(p);
-
-  // Capa 3
-  const override = tenantConfig?.roleOverrides?.[role];
-  if (override) {
-    for (const p of override.grant ?? []) effective.add(p);
-    for (const p of override.deny ?? []) effective.delete(p);  // ← delete, no skip
-  }
-
-  // Capa 4
-  for (const groupId of user.groups ?? []) {
-    for (const p of resolveGroupPermissions(groupId)) effective.add(p);
-  }
-
-  // Capa 5 (deny al final = prioridad absoluta)
-  if (user.permissionOverrides) {
-    for (const p of user.permissionOverrides.grant ?? []) effective.add(p);
-    for (const p of user.permissionOverrides.deny ?? []) effective.delete(p);
-  }
-
-  return effective;
-}
+user.permissionOverrides.deny = ['menu:reports', 'menu:hub']
 ```
 
-**Por qué Set:** operaciones O(1) para has/add/delete. El set final se convierte a array solo cuando hace falta (para serializar en respuesta o para listar).
-
-### 5.3 Herencia de grupos
-
-```typescript
-// packages/shared/src/constants/roles-permissions.ts
-export function resolveGroupPermissions(groupId, visited = new Set()): Set<Permission> {
-  if (visited.has(groupId)) return new Set(); // evita ciclos
-  visited.add(groupId);
-
-  const def = GroupDefinitions[groupId];
-  const result = new Set(def.permissions);
-
-  for (const implied of def.impliedGroups ?? []) {
-    for (const p of resolveGroupPermissions(implied, visited)) {
-      result.add(p);
-    }
-  }
-  return result;
-}
-```
-
-El `visited` Set es protección contra ciclos teóricos. La herencia es aditiva: property:manager incluye todo lo de property:editor que incluye todo lo de property:viewer.
-
-### 5.4 Secciones de menú como permisos deny
-
-Los ítems del menú del frontend se controlan con "deny overrides" de tipo `menu:xxx`:
-
-```
-user.permissionOverrides.deny = ['menu:reports', 'menu:settings']
-```
-
-El layout del frontend filtra la navegación según esto. No hay un sistema separado de visibilidad — se reutiliza la misma capa 5 de permisos. Simple y extensible.
-
-### 5.5 Middleware `requirePermission`
-
-```typescript
-// En una ruta:
-{ preHandler: [requireAuth, requirePermission('property:create')] }
-
-// El middleware:
-// 1. Carga el User desde la DB usando request.auth.userId
-// 2. Verifica que pertenece al tenant correcto
-// 3. Carga el Tenant para obtener permissionConfig
-// 4. Llama resolvePermissions(user, tenant.permissionConfig)
-// 5. Si el permiso no está → 403
-// 6. Si está → pone request.currentUser para evitar re-query en el handler
-```
+El frontend filtra la navegación con esto. No hay sistema separado de visibilidad.
 
 ---
 
-## 6. Ciclo de vida de la suscripción
+## 11. Ciclo de vida de la suscripción
 
-### 6.1 Estados y transiciones
+El estado de billing vive en `TenantRegistry` de la Platform DB. No hay entidad `Subscription` separada — TenantRegistry tiene todos los campos necesarios:
 
-```
-Registro
-    ↓
-TRIALING (plan FREE, trialEndsAt = hoy + TRIAL_DAYS)
-    ↓ (pago exitoso)
-ACTIVE (plan actualizado, currentPeriodEnd = hoy + 30d)
-    ↓ (pago falla)
-PAST_DUE (período de gracia, acceso normal + header X-Billing-Warning)
-    ↓ (no paga en 7 días)
-EXPIRED → tenant.status = SUSPENDED (solo lectura)
-    ↓ (cancela activamente)
-CANCELLED (activa hasta currentPeriodEnd, luego EXPIRED)
-```
+| Campo | Descripción |
+|-------|-------------|
+| `plan` | FREE / PRO / ENTERPRISE |
+| `status` | TRIAL / ACTIVE / SUSPENDED / CANCELLED |
+| `subscriptionStatus` | TRIALING / ACTIVE / PAST_DUE / CANCELLED / EXPIRED |
+| `trialEndsAt` | Fecha de vencimiento del trial |
+| `currentPeriodEnd` | Fin del período pagado actual |
+| `cancelAtPeriodEnd` | Si está programada la cancelación |
+| `externalSubscriptionId` | ID del proveedor de pagos (Stripe/MP) |
 
-### 6.2 Enforcement en middleware
+### Estado de acceso
 
-El middleware `checkLicense` (en `apps/api/src/middleware/license.ts`) se ejecuta **en cada request relevante** (no en health check ni endpoints públicos).
-
-Lógica de acceso por estado de cuenta:
-
-| tenant.status | GET | POST/PATCH/DELETE |
-|---------------|-----|-------------------|
+| TenantStatus | GET | POST/PUT/PATCH/DELETE |
+|--------------|-----|----------------------|
 | TRIAL / ACTIVE | ✅ | ✅ |
 | SUSPENDED | ✅ | ❌ 403 ACCOUNT_SUSPENDED |
 | CANCELLED | ❌ 403 | ❌ 403 |
 
-Para TRIALING: si `trialEndsAt < now`, automáticamente:
-1. `tenant.status = SUSPENDED`
-2. `sub.status = EXPIRED`
-3. `em.flush()` — persiste en DB
-4. Responde 402 TRIAL_EXPIRED
-
-El header `X-Trial-Days-Left` lo setea el middleware cuando el trial está activo. El frontend lo usa para mostrar un contador en la navbar.
-
-### 6.3 Enforcement de límites por plan
-
-```typescript
-// Factory que genera un preHandler:
-enforcePlanLimit('maxProperties', (tenantId, em) => {
-  return em.count(Property, { tenant: { id: tenantId } });
-})
-
-// Uso en ruta:
-{ preHandler: [requireAuth, checkLicense, enforcePlanLimit('maxProperties', countFn), requirePermission('property:create')] }
-```
-
-`PlanLimits` en `@inmob/shared` define los límites por plan. `-1` = sin límite (ENTERPRISE). El middleware hace el count y compara contra el límite del plan del tenant.
+Para TRIALING expirado: el middleware automáticamente setea `status = SUSPENDED`, `subscriptionStatus = EXPIRED` y responde 402 TRIAL_EXPIRED.
 
 ---
 
-## 7. Registro atómico (transacción única)
-
-`POST /api/register` crea tres entidades en una sola transacción:
-
-```typescript
-await em.begin();
-try {
-  const tenant = em.create(Tenant, { ... });
-  const subscription = em.create(Subscription, { tenant: tenant as never, ... });
-  const owner = em.create(User, { clerkId: tempId, tenant: tenant as never, ... });
-  
-  await em.flush();  // INSERT las tres entidades
-  
-  // El clerkId es un "chicken and egg": necesitamos el ID de la DB para usarlo como clerkId
-  // En MVP: clerkId = userId (autorreferencia). En prod: Clerk devuelve su propio ID
-  owner.clerkId = owner.id;
-  await em.flush();
-  await em.commit();
-} catch (err) {
-  await em.rollback();
-  throw err;
-}
-```
-
-**Por qué `tenant as never` en las relaciones:**
-MikroORM espera `Ref<Tenant>` (una referencia lazy), pero `em.create()` acepta la entidad directamente y la convierte internamente. El cast `as never` es un hack necesario para satisfacer el tipo de TypeScript sin perder la ergonomía de `em.create()`. En runtime funciona correctamente.
-
-**Por qué `clerkId` se auto-referencia:**
-El campo `clerkId` es el puente diseñado para conectar con Clerk. En producción, Clerk devuelve su propio `sub` (ej: `user_2abc...`) y ese valor va en `clerkId`. En MVP, como no hay Clerk, usamos el propio UUID de la DB. El patrón: crear con UUID temporal → flush → sobreescribir con el ID real → flush de nuevo.
-
----
-
-## 8. Multi-tenancy
-
-### 8.1 El @Filter de MikroORM
-
-Todas las entidades de negocio (Property, Contact, Lead, Agenda, PortalConnection, User) tienen un filtro declarativo:
-
-```typescript
-@Filter({
-  name: 'byTenant',
-  cond: (args: { tenantId: string }) => ({ tenant: { id: args.tenantId } }),
-  default: false,  // ← no se aplica por defecto
-})
-```
-
-Con `default: false`, el filtro no se activa automáticamente. Hay que activarlo explícitamente:
-
-```typescript
-em.addFilter('byTenant', { tenantId: request.auth!.tenantId });
-// Ahora TODAS las queries de ese em solo ven datos de ese tenant
-```
-
-**En esta implementación MVP**, las rutas no usan `addFilter` — agregan la condición `{ tenant: { id: tenantId } }` directamente en cada `findOne`/`find`. Esto es más explícito y fácil de razonar para un MVP. El filtro está declarado para uso futuro cuando haya más rutas y la consistencia sea más crítica.
-
-### 8.2 Aislamiento por tenantId en el token
-
-El `tenantId` viene del JWT. El usuario **no puede** cambiar su tenantId — está firmado con `APP_SECRET`. Cada query usa ese `tenantId` para filtrar. No hay forma de ver datos de otro tenant sin comprometer el secreto del servidor.
-
----
-
-## 9. Migraciones
-
-### 9.1 Estructura
+## 12. Flujo de un request típico
 
 ```
-packages/database/src/migrations/
-├── .snapshot-inmob_db.json          ← snapshot del schema actual (para calcular diffs)
-└── Migration20260419145701.ts       ← migración inicial (todas las tablas)
+1. Request llega a Fastify
+2. @fastify/helmet — headers de seguridad
+3. @fastify/cors — verifica origen
+4. onRequest hook (RequestContext MikroORM para Platform DB)
+5. tenant-routing hook:
+     → Lee X-Tenant header (o subdomain del hostname)
+     → Busca TenantRegistry en Platform DB
+     → request.orm = connectionManager.get(databaseUrl)
+6. Handler de ruta:
+     preHandler: [requireAuth, checkLicense, requirePermission('recurso:accion')]
+       → requireAuth: verifica JWT → request.auth = { userId, subdomain }
+       → checkLicense: verifica estado en TenantRegistry (Platform DB)
+       → requirePermission: carga User de tenant DB → resolvePermissions()
+7. Handler body: lógica de negocio con request.orm.em.fork()
+8. em.flush(): persiste cambios en tenant DB
+9. reply.send(): serializa respuesta
+10. Error handler global si algo falla
 ```
-
-El snapshot JSON es el "estado conocido" de la DB. Cuando generás una nueva migración, MikroORM compara las entidades actuales contra este snapshot para calcular el diff.
-
-### 9.2 Comandos
-
-```bash
-# Primera migración (schema completo desde cero):
-pnpm db:migrate:create init --initial
-
-# Migración incremental (después de cambiar una entidad):
-pnpm db:migrate:create nombre-descriptivo
-
-# Aplicar migraciones pendientes:
-pnpm db:migrate
-
-# Revertir última migración:
-pnpm db:migrate:down
-```
-
-### 9.3 Por qué el script tiene `--initial`
-
-```typescript
-// packages/database/src/scripts/migrate-create.ts
-const initial = process.argv[3] === '--initial';
-if (initial) {
-  await migrator.createInitialMigration('./src/migrations');
-} else {
-  await migrator.createMigration(undefined, false, false, name);
-}
-```
-
-`createMigration()` puede devolver un diff vacío si la DB está vacía y el migrator considera que no hay cambios respecto al "último estado conocido" (que podría ser vacío también). `createInitialMigration()` fuerza la generación del SQL completo sin comparar con estado previo.
-
----
-
-## 10. dotenv y el problema de paths relativos
-
-Un problema clásico en monorepos: ¿desde dónde se ejecuta el proceso?
-
-El `.env` está en la raíz del monorepo. Cuando `packages/database/src/config.ts` hace `dotenv.config()` sin argumentos, busca `.env` en el CWD (current working directory), que en pnpm es la raíz del monorepo. **Funciona** cuando ejecutás desde la raíz.
-
-Pero cuando el migrator ejecuta scripts directamente desde `packages/database/`, el CWD cambia. La solución robusta: calcular el path absoluto relativo al archivo `.ts`:
-
-```typescript
-import dotenv from 'dotenv';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
-
-// Este archivo está en packages/database/src/config.ts
-// ../../.. lleva a la raíz del monorepo
-dotenv.config({
-  path: resolve(dirname(fileURLToPath(import.meta.url)), '../../../.env')
-});
-```
-
-`import.meta.url` devuelve la URL del módulo actual (`file:///...`). `fileURLToPath` convierte a path del sistema. A partir de ahí, `../../../` es siempre la raíz del monorepo, sin importar desde dónde ejecutás.
-
----
-
-## 11. Fastify — Decisiones de diseño
-
-### 11.1 Plugin system y registro de rutas
-
-```typescript
-// apps/api/src/app.ts
-app.register(registerRoutes, { prefix: '/api/register' });
-app.register(authRoutes, { prefix: '/api/auth' });
-app.register(propertiesRoutes, { prefix: '/api/properties' });
-// ...
-```
-
-Fastify usa un sistema de plugins con encapsulación. Cada `register()` crea un scope aislado. Las rutas dentro de ese scope heredan el prefijo. El `preHandler` se puede definir por scope o por ruta individual.
-
-### 11.2 Decorador `app.orm`
-
-```typescript
-// app.ts
-app.decorate('orm', orm);
-
-// En cualquier handler:
-const em = request.server.orm.em.fork();
-```
-
-`app.decorate()` agrega propiedades al objeto Fastify. Es el mecanismo estándar para compartir recursos (DB, cache, etc.) entre plugins. TypeScript lo conoce porque en `app.ts` extendemos la interfaz:
-
-```typescript
-declare module 'fastify' {
-  interface FastifyInstance {
-    orm: MikroORM;
-  }
-}
-```
-
-### 11.3 Error handler global
-
-```typescript
-app.setErrorHandler((error: Error & { statusCode?: number }, _req, reply) => {
-  const statusCode = error.statusCode ?? 500;
-  app.log.error(error);
-  return reply.status(statusCode).send({
-    error: statusCode >= 500 ? 'Error interno del servidor' : error.message,
-  });
-});
-```
-
-El cast `Error & { statusCode?: number }` es necesario porque Fastify puede generar errores con `statusCode` (ej: payload demasiado grande) pero el tipo base `Error` no lo tiene. Sin el cast, TypeScript se queja.
-
----
-
-## 12. Seed de desarrollo
-
-```
-packages/database/src/seeds/run.ts
-```
-
-Crea en orden:
-1. `Tenant` "inmob-demo"
-2. `Subscription` TRIALING (30 días desde hoy)
-3. 5 `User` con roles distintos (owner, administrador, coordinador, agente, captador)
-
-**Usuarios disponibles después del seed:**
-
-| Email | Password | Rol |
-|-------|----------|-----|
-| owner@demo.com | owner123 | owner |
-| admin@demo.com | admin123 | administrador |
-| coordinador@demo.com | coord123 | coordinador |
-| agente@demo.com | agente123 | agente |
-| captador@demo.com | capt123 | captador |
-
-El seed hace `em.findOne(Tenant, { slug: 'inmob-demo' })` primero — si ya existe, no hace nada (idempotente).
 
 ---
 
 ## 13. Patrones a seguir al agregar código nuevo
 
-### Agregar una entidad nueva
+### Agregar una entidad al tenant
 
 1. Crear `packages/database/src/entities/NombreEntidad.entity.ts`
-2. Agregar `@Filter({ name: 'byTenant', ... })` si pertenece a un tenant
+2. Sin `@Filter byTenant` — no es necesario en DB-per-tenant
 3. Exportar desde `packages/database/src/entities/index.ts`
 4. Registrar en `packages/database/src/config.ts` → `entities: [...]`
 5. Ejecutar `pnpm db:migrate:create nombre-entidad`
-6. Verificar la migración generada antes de ejecutarla
 
 ### Agregar una ruta nueva
 
 1. Crear `apps/api/src/routes/feature/index.ts`
 2. Registrar en `apps/api/src/app.ts` con `app.register(featureRoutes, { prefix: '/api/feature' })`
 3. Usar `preHandler: [requireAuth, requirePermission('resource:action')]`
-4. Si crea recursos limitados por plan: agregar `enforcePlanLimit('maxX', countFn)` antes del handler
-5. Agregar el permiso al `RolePermissions` correspondiente en `@inmob/shared` si es nuevo
+4. Usar `request.orm.em.fork()` para queries de negocio
+5. Si el endpoint es para el portal: usar `app.platformOrm.em.fork()` y registrar bajo `/api/portal`
 
 ### Agregar un permiso nuevo
 
 1. En `packages/shared/src/constants/roles-permissions.ts`:
-   - Agregar a `Resource` o `Action` si es un nuevo tipo
-   - Agregar al `RolePermissions` de los roles que lo necesitan
-   - Si es un grupo nuevo: agregar a `SystemGroup` y a `GroupDefinitions`
-2. Generar migración si se cambia `permissionConfig` del schema de Tenant
+   - Agregar a `Resource` o `Action`
+   - Agregar al `RolePermissions` de los roles correspondientes
+   - Si es un grupo nuevo: agregar a `SystemGroup` y `GroupDefinitions`
 
 ---
 
 ## 14. Problemas conocidos y pendientes
 
-### Pendiente: Webhook Clerk
+### Webhook de pagos
 
-`user.clerkId` actualmente es el propio `user.id` (autorreferencia). Al integrar Clerk:
-1. En `POST /api/register`: crear el usuario en Clerk primero, usar `clerkUser.id` como `clerkId`
-2. Agregar webhook `POST /api/webhooks/clerk` para `user.created` / `user.updated` / `user.deleted`
-3. El middleware `requireAuth` verificaría el JWT de Clerk con `CLERK_SECRET_KEY`
+`TenantRegistry` tiene `externalSubscriptionId`, `externalCustomerId`, `lastWebhookEvent`, `lastWebhookAt`. El webhook handler (`POST /api/subscriptions/webhook`) recibe eventos pero no llama aún a la API de Stripe/MercadoPago — está marcado con `// TODO`.
 
-### Pendiente: Integración de pagos
+`lastWebhookEvent + lastWebhookAt` implementan idempotencia: si llega el mismo evento en menos de 5 minutos, se ignora para prevenir doble procesamiento.
 
-`subscriptions.ts` tiene marcadores `// TODO: Stripe` y `// TODO: MercadoPago`. La tabla `Subscription` ya tiene `externalSubscriptionId` y `externalCustomerId` para el vínculo con el proveedor.
+### Provisioner en desarrollo local
 
-Idempotencia del webhook: `lastWebhookEvent` + `lastWebhookAt`. Si llega el mismo evento en menos de 5 minutos, se ignora (previene procesamiento duplicado de webhooks).
+En local no hay Neon. El provisioner (`provision.ts`) va a fallar si se llama en local. Para tests de registro, usar directamente el seed (`pnpm db:seed`) que crea el tenant "demo" manualmente.
 
-### Pendiente: `allowGlobalContext: false`
+### `allowGlobalContext: false`
 
-Está en `config.ts`. Significa que si accidentalmente usás `app.orm.em` sin hacer `fork()` en un handler concurrente, MikroORM lanza un error. Es una red de seguridad — si ves ese error, significa que olvidaste el `em.fork()` en algún handler.
-
----
-
-## 15. Resumen mental del flujo de un request típico
-
-```
-1. Request entra a Fastify
-2. @fastify/helmet agrega headers de seguridad
-3. @fastify/cors verifica origen
-4. requireAuth: verifica JWT → request.auth = { userId, tenantId }
-5. checkLicense: verifica estado del tenant/suscripción
-6. requirePermission('recurso:accion'):
-     → carga User de la DB (o usa request.currentUser si ya está)
-     → carga Tenant para permissionConfig
-     → resolvePermissions() → set de permisos efectivos
-     → si no tiene el permiso: 403
-7. Handler: lógica de negocio con em.fork()
-8. em.flush(): persiste cambios en DB
-9. reply.send(): serializa respuesta
-10. Error handler (si algo falla en cualquier paso)
-```
-
-Cada middleware es una función `async (request, reply)` que hace `reply.send(error)` para cortocircuitar el chain, o retorna undefined para dejar pasar al siguiente.
+Está en ambos `config.ts`. Si accidentalmente usás el em raíz sin `fork()` en un handler concurrente, MikroORM lanza error. Es una red de seguridad intencional — si ves ese error, falta el `fork()`.

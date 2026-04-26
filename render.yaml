@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: inmob-api
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter @inmob/shared build && pnpm --filter @inmob/database build && pnpm --filter @inmob/platform build && pnpm --filter @inmob/api build
+    startCommand: node apps/api/dist/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3001"
+      - key: APP_DOMAIN
+        sync: false
+      - key: PLATFORM_DATABASE_URL
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: APP_SECRET
+        generateValue: true
+      - key: JWT_EXPIRY
+        value: 7d
+      - key: TRIAL_DAYS
+        value: "30"
+      - key: CORS_ORIGIN
+        sync: false
+      - key: NEON_API_KEY
+        sync: false
+      - key: NEON_PROJECT_ID
+        sync: false
+      - key: NEON_DB_OWNER
+        value: neondb_owner
+      - key: NEON_BASE_URL
+        sync: false

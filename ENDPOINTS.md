@@ -1,23 +1,47 @@
 # API Endpoints — inmob_demo_back
 
-**Base URL:** `https://inmob-demo-back.onrender.com`
+**Base URL desarrollo:** `http://localhost:3001`  
+**Base URL producción:** `https://inmob-api.onrender.com`
 
-> Todos los endpoints protegidos requieren header:
-> `Authorization: Bearer <token>`
->
-> El token se obtiene en `POST /api/auth/login`.
+---
+
+## Headers obligatorios
+
+### X-Tenant (requerido en casi todos los endpoints)
+
+Indica qué inmobiliaria se está usando. Requerido en **todos los endpoints** excepto `/health`, `/api/register/*` y `/api/portal/*`.
+
+```
+X-Tenant: demo
+```
+
+En producción con DNS wildcard (`demo.app.com`), el subdominio se detecta automáticamente. El header tiene prioridad para facilitar desarrollo local sin DNS.
+
+### Authorization (en endpoints protegidos)
+
+```
+Authorization: Bearer <token>
+```
+
+El token se obtiene en `POST /api/auth/login`.
 
 ---
 
 ## Índice
 
 1. [Health](#health)
-2. [Auth](#auth)
+2. [Portal (sin tenant)](#portal-sin-tenant)
 3. [Registro de inmobiliaria](#registro-de-inmobiliaria)
-4. [Propiedades](#propiedades)
-5. [Usuarios del tenant](#usuarios-del-tenant)
-6. [Permisos](#permisos)
-7. [Licencia — códigos de error](#licencia--códigos-de-error)
+4. [Auth](#auth)
+5. [Tenant](#tenant)
+6. [Suscripción](#suscripción)
+7. [Propiedades](#propiedades)
+8. [Contactos](#contactos)
+9. [CRM — Leads](#crm--leads)
+10. [Agenda](#agenda)
+11. [Configuración — Usuarios](#configuración--usuarios)
+12. [Configuración — Permisos](#configuración--permisos)
+13. [Licencia — códigos de error](#licencia--códigos-de-error)
 
 ---
 
@@ -25,15 +49,159 @@
 
 ### `GET /health`
 
-Verifica que la API está viva. Sin autenticación.
+Sin autenticación, sin X-Tenant.
+
+```json
+{ "status": "ok", "timestamp": "2026-04-25T00:00:00.000Z" }
+```
+
+---
+
+## Portal (sin tenant)
+
+Los endpoints de portal **no requieren X-Tenant** — operan sobre la Platform DB directamente.
+
+### `POST /api/portal/provision`
+
+Crea una nueva inmobiliaria completa. Provisiona una DB Neon, ejecuta migraciones, crea el owner y registra el tenant.
+
+**Body**
+```json
+{
+  "subdomain": "garcia",
+  "name": "Inmobiliaria García",
+  "ownerEmail": "garcia@ejemplo.com",
+  "ownerFirstName": "Juan",
+  "ownerLastName": "García",
+  "password": "miPassword123",
+  "taxId": "20-12345678-9",
+  "country": "AR",
+  "timezone": "America/Argentina/Buenos_Aires"
+}
+```
+
+| Campo | Requerido | Descripción |
+|-------|-----------|-------------|
+| `subdomain` | ✅ | Slug único. Solo minúsculas, números y guiones. Mínimo 3 caracteres. |
+| `name` | ✅ | Nombre de la inmobiliaria |
+| `ownerEmail` | ✅ | Email del dueño |
+| `ownerFirstName` | ✅ | Nombre |
+| `ownerLastName` | ✅ | Apellido |
+| `password` | ✅ | Contraseña mínimo 6 caracteres |
+| `taxId` | — | CUIT/RUT/NIF |
+| `country` | — | Código ISO 2 letras. Default: `AR` |
+| `timezone` | — | Default: `America/Argentina/Buenos_Aires` |
+
+**Response 201**
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiJ9...",
+  "subdomain": "garcia",
+  "loginUrl": "https://garcia.app.com",
+  "message": "Inmobiliaria \"Inmobiliaria García\" creada. Trial de 30 días activo."
+}
+```
+
+El `token` está listo para usar inmediatamente. El `subdomain` va en `X-Tenant` a partir de ahora.
+
+**Errores**
+| Status | code | Cuándo |
+|--------|------|--------|
+| 400 | — | Datos de validación inválidos |
+| 409 | `SUBDOMAIN_TAKEN` | El subdominio ya existe |
+| 500 | `PROVISION_ERROR` | Error al crear la DB Neon |
+
+---
+
+### `GET /api/portal/hub`
+
+Busca propiedades publicadas en todos los tenants (índice cross-tenant). Sin autenticación.
+
+**Query params**
+| Param | Tipo | Descripción |
+|-------|------|-------------|
+| `type` | string | `house` `apartment` `land` `commercial` `office` etc. |
+| `operationType` | string | `sale` `rent` `temporary_rent` |
+| `city` | string | Búsqueda parcial (case-insensitive) |
+| `priceMin` | number | Precio mínimo |
+| `priceMax` | number | Precio máximo |
+| `rooms` | number | Cantidad de ambientes |
+| `page` | number | Default `1` |
+| `perPage` | number | Default `20`, máx `100` |
 
 **Response 200**
 ```json
 {
-  "status": "ok",
-  "timestamp": "2026-04-20T01:32:20.620Z"
+  "data": [
+    {
+      "id": "...",
+      "tenantSubdomain": "garcia",
+      "type": "apartment",
+      "operationType": "sale",
+      "price": 120000,
+      "currency": "USD",
+      "city": "Buenos Aires",
+      "neighborhood": "Palermo",
+      "rooms": 3,
+      "publishedAt": "2026-04-25T10:00:00.000Z"
+    }
+  ],
+  "meta": {
+    "total": 1,
+    "page": 1,
+    "perPage": 20,
+    "totalPages": 1
+  }
 }
 ```
+
+---
+
+### `GET /api/portal/tenants`
+
+Lista todos los tenants activos. Útil para construir un selector de inmobiliaria en el login.
+
+**Response 200**
+```json
+{
+  "data": [
+    {
+      "subdomain": "demo",
+      "name": "Inmobiliaria Demo",
+      "logoUrl": null
+    },
+    {
+      "subdomain": "garcia",
+      "name": "Inmobiliaria García",
+      "logoUrl": "https://..."
+    }
+  ]
+}
+```
+
+---
+
+## Registro de inmobiliaria
+
+### `GET /api/register/check-slug/:slug`
+
+Verifica si un subdomain está disponible. Sin autenticación.
+
+```json
+{ "available": true, "slug": "garcia" }
+{ "available": false, "slug": "demo" }
+```
+
+**Response 400** — slug inválido
+```json
+{ "available": false, "error": "Slug inválido. Solo minúsculas, números y guiones (3-50 caracteres)." }
+```
+
+---
+
+### `POST /api/register`
+
+Alias de `POST /api/portal/provision` — mismos parámetros y respuesta. Se mantiene por compatibilidad.
 
 ---
 
@@ -41,13 +209,14 @@ Verifica que la API está viva. Sin autenticación.
 
 ### `POST /api/auth/login`
 
-Login con email + contraseña + slug de la inmobiliaria. Devuelve JWT y permisos resueltos.
+Login con email + contraseña. Requiere `X-Tenant`.
+
+**Headers:** `X-Tenant: demo`
 
 **Body**
 ```json
 {
   "email": "owner@demo.com",
-  "tenantSlug": "inmob-demo",
   "password": "owner123"
 }
 ```
@@ -67,9 +236,8 @@ Login con email + contraseña + slug de la inmobiliaria. Devuelve JWT y permisos
     "permissions": ["agenda:create", "billing:manage", "property:create", "..."]
   },
   "tenant": {
-    "id": "ef6b076a-...",
     "name": "Inmobiliaria Demo",
-    "slug": "inmob-demo",
+    "subdomain": "demo",
     "logoUrl": null,
     "plan": "free",
     "status": "trial"
@@ -80,18 +248,19 @@ Login con email + contraseña + slug de la inmobiliaria. Devuelve JWT y permisos
 **Errores**
 | Status | code | Cuándo |
 |--------|------|--------|
+| 400 | `TENANT_MISSING` | No se envió X-Tenant |
 | 401 | `INVALID_CREDENTIALS` | Email o contraseña incorrectos |
 | 401 | `NO_PASSWORD` | Usuario sin contraseña asignada |
 | 403 | `USER_INACTIVE` | Usuario desactivado |
-| 404 | `TENANT_NOT_FOUND` | Slug de inmobiliaria no existe |
+| 404 | `TENANT_NOT_FOUND` | El subdomain del X-Tenant no existe |
 
 ---
 
 ### `GET /api/auth/me`
 
-Devuelve el usuario autenticado con permisos actuales. Útil al iniciar la app del frontend para hidratar el estado global.
+Usuario autenticado con permisos actuales. Usar al iniciar la app para hidratar estado global.
 
-**Headers:** `Authorization: Bearer <token>`
+**Headers:** `Authorization: Bearer <token>`, `X-Tenant: demo`
 
 **Response 200**
 ```json
@@ -111,12 +280,11 @@ Devuelve el usuario autenticado con permisos actuales. Útil al iniciar la app d
     },
     "permissionOverrides": null,
     "isActive": true,
-    "lastLoginAt": "2026-04-20T01:32:00.000Z"
+    "lastLoginAt": "2026-04-25T01:32:00.000Z"
   },
   "tenant": {
-    "id": "ef6b076a-...",
     "name": "Inmobiliaria Demo",
-    "slug": "inmob-demo",
+    "subdomain": "demo",
     "logoUrl": null,
     "plan": "free",
     "status": "trial"
@@ -129,28 +297,25 @@ Devuelve el usuario autenticado con permisos actuales. Útil al iniciar la app d
 
 ### `POST /api/auth/logout`
 
-Stateless — el servidor no invalida el token (no hay sesión). El cliente debe descartar el token localmente.
+Stateless — el servidor no invalida el token. El cliente debe descartarlo.
 
 **Response 204** (sin body)
 
 ---
 
-### `GET /api/auth/users?tenant=inmob-demo`
+### `GET /api/auth/users`
 
-Lista usuarios del tenant. Útil para construir un selector de login en el frontend de desarrollo.
+Lista usuarios del tenant. Útil para un selector de login en el frontend de desarrollo.
 
-**Query params**
-| Param | Requerido | Descripción |
-|-------|-----------|-------------|
-| `tenant` | ✅ | Slug de la inmobiliaria |
+**Headers:** `X-Tenant: demo`  
+*(No requiere Authorization — solo funciona con NODE_ENV=development)*
 
 **Response 200**
 ```json
 {
   "tenant": {
-    "id": "ef6b076a-...",
     "name": "Inmobiliaria Demo",
-    "slug": "inmob-demo"
+    "subdomain": "demo"
   },
   "users": [
     {
@@ -167,106 +332,162 @@ Lista usuarios del tenant. Útil para construir un selector de login en el front
 
 ---
 
-## Registro de inmobiliaria
+## Tenant
 
-### `GET /api/register/check-slug/:slug`
+### `GET /api/tenants/me`
 
-Verifica si un slug está disponible. Sin autenticación. Usar en tiempo real mientras el usuario escribe el nombre.
+Datos de la inmobiliaria del usuario autenticado.
+
+**Headers:** `Authorization: Bearer <token>`, `X-Tenant: demo`
 
 **Response 200**
 ```json
-{ "available": true, "slug": "mi-inmobiliaria" }
-```
-```json
-{ "available": false, "slug": "inmob-demo" }
-```
-
-**Response 400** — slug inválido (formato incorrecto o longitud)
-```json
 {
-  "available": false,
-  "error": "Slug inválido. Solo minúsculas, números y guiones (3-50 caracteres)."
+  "data": {
+    "name": "Inmobiliaria Demo",
+    "subdomain": "demo",
+    "logoUrl": null,
+    "taxId": null,
+    "settings": {
+      "primaryColor": "#1a73e8",
+      "defaultCurrency": "USD",
+      "defaultLanguage": "es"
+    }
+  }
 }
 ```
 
 ---
 
-### `POST /api/register`
+### `PUT /api/tenants/me`
 
-Crea una inmobiliaria nueva con su owner. Devuelve JWT — el owner puede operar inmediatamente.
-Sin autenticación.
+Actualiza datos de la inmobiliaria. Requiere permiso `settings:update`.
+
+**Headers:** `Authorization: Bearer <token>`, `X-Tenant: demo`
+
+**Body** (todos opcionales)
+```json
+{
+  "name": "Inmobiliaria Demo 2",
+  "logoUrl": "https://cdn.ejemplo.com/logo.png",
+  "taxId": "30-12345678-9",
+  "settings": {
+    "primaryColor": "#e53935",
+    "defaultCurrency": "ARS"
+  }
+}
+```
+
+**Response 200** — datos actualizados.
+
+---
+
+### `GET /api/tenants/branding/:subdomain`
+
+Branding público de una inmobiliaria. Sin autenticación. Para la página de login por subdominio.
+
+**Response 200**
+```json
+{
+  "name": "Inmobiliaria Demo",
+  "subdomain": "demo",
+  "logoUrl": null,
+  "primaryColor": "#1a73e8"
+}
+```
+
+---
+
+## Suscripción
+
+Todos los endpoints de suscripción requieren permiso `billing:*` (solo `owner`).
+
+### `GET /api/subscriptions/me`
+
+Estado de la suscripción del tenant. Requiere `billing:read`.
+
+**Headers:** `Authorization: Bearer <token>`, `X-Tenant: demo`
+
+**Response 200**
+```json
+{
+  "data": {
+    "plan": "free",
+    "status": "trial",
+    "subscriptionStatus": "trialing",
+    "trialEndsAt": "2026-05-25T00:00:00.000Z",
+    "currentPeriodEnd": null,
+    "cancelAtPeriodEnd": false,
+    "paymentProvider": null
+  }
+}
+```
+
+---
+
+### `POST /api/subscriptions/upgrade`
+
+Sube de plan. Requiere `billing:manage`.
 
 **Body**
 ```json
-{
-  "agencyName": "Inmobiliaria García",
-  "ownerEmail": "garcia@ejemplo.com",
-  "ownerFirstName": "Carlos",
-  "ownerLastName": "García",
-  "ownerPhone": "+54 11 1234-5678",
-  "password": "miPassword123",
-  "taxId": "20-12345678-9",
-  "country": "AR",
-  "timezone": "America/Argentina/Buenos_Aires"
-}
+{ "plan": "pro" }
 ```
 
-> `slug` es opcional — si no se envía, se genera automáticamente desde `agencyName`.
+---
 
-**Response 201**
+### `POST /api/subscriptions/cancel`
+
+Cancela al fin del período. Requiere `billing:manage`.
+
+**Response 200**
 ```json
-{
-  "token": "eyJhbGciOiJIUzI1NiJ9...",
-  "permissions": ["property:create", "property:read", "..."],
-  "tenant": {
-    "id": "...",
-    "name": "Inmobiliaria García",
-    "slug": "inmobiliaria-garcia",
-    "status": "trial",
-    "plan": "free"
-  },
-  "subscription": {
-    "id": "...",
-    "status": "trialing",
-    "trialEndsAt": "2026-05-04T00:00:00.000Z",
-    "plan": "free"
-  },
-  "user": {
-    "id": "...",
-    "email": "garcia@ejemplo.com",
-    "firstName": "Carlos",
-    "lastName": "García",
-    "roles": ["owner"]
-  },
-  "message": "Inmobiliaria \"Inmobiliaria García\" creada. Trial activo hasta 4/5/2026."
-}
+{ "message": "Suscripción cancelada. Activa hasta 2026-05-25." }
 ```
 
-**Errores**
-| Status | code | Cuándo |
-|--------|------|--------|
-| 409 | `SLUG_TAKEN` | El slug ya existe |
-| 409 | `EMAIL_TAKEN` | El email ya tiene cuenta |
-| 400 | `PASSWORD_REQUIRED` | No se envió contraseña |
+---
+
+### `POST /api/subscriptions/reactivate`
+
+Reactiva una cancelación. Requiere `billing:manage`.
+
+---
+
+### `POST /api/subscriptions/webhook`
+
+Webhook del proveedor de pagos (Stripe / MercadoPago). Sin autenticación.
 
 ---
 
 ## Propiedades
 
+Todos requieren `X-Tenant` + `Authorization`.
+
 ### `GET /api/properties`
 
-Lista propiedades del tenant con paginación y filtros opcionales.
+Lista propiedades con paginación y filtros.
 
-**Headers:** `Authorization: Bearer <token>`
+**Query params**
+| Param | Tipo | Descripción |
+|-------|------|-------------|
+| `type` | string | `house` `apartment` `land` `commercial` `office` `warehouse` `garage` `other` |
+| `operationType` | string | `sale` `rent` `temporary_rent` |
+| `status` | string | `draft` `active` `reserved` `sold` `rented` `paused` `archived` |
+| `city` | string | Búsqueda parcial en ciudad |
+| `neighborhood` | string | Búsqueda parcial en barrio |
+| `priceMin` | number | Precio mínimo |
+| `priceMax` | number | Precio máximo |
+| `rooms` | number | Ambientes. `5` = "5 o más" |
+| `ageMax` | number | Antigüedad máxima en años. `0` = a estrenar |
+| `page` | number | Default `1` |
+| `perPage` | number | Default `20`, máx `100` |
 
-**Query params (todos opcionales)**
-| Param | Valores posibles |
-|-------|-----------------|
-| `status` | `draft` `active` `reserved` `sold` `rented` `paused` `archived` |
-| `type` | `house` `apartment` `land` `commercial` `office` `warehouse` `garage` `other` |
-| `operationType` | `sale` `rent` `temporary_rent` |
-| `page` | número (default: 1) |
-| `perPage` | número máx 100 (default: 20) |
+**Ejemplos**
+```
+GET /api/properties?type=apartment&operationType=sale&city=Buenos Aires
+GET /api/properties?rooms=3&priceMin=100000&priceMax=200000
+GET /api/properties?neighborhood=Palermo&ageMax=0
+```
 
 **Response 200**
 ```json
@@ -284,7 +505,6 @@ Lista propiedades del tenant con paginación y filtros opcionales.
       "address": {
         "neighborhood": "Palermo",
         "city": "Buenos Aires",
-        "state": "Buenos Aires",
         "country": "AR",
         "showExactAddress": true
       },
@@ -296,8 +516,8 @@ Lista propiedades del tenant con paginación y filtros opcionales.
         "garages": 1
       },
       "images": [],
-      "publishedAt": "2026-04-20T12:00:00.000Z",
-      "createdAt": "2026-04-20T10:00:00.000Z"
+      "publishedAt": "2026-04-25T12:00:00.000Z",
+      "createdAt": "2026-04-25T10:00:00.000Z"
     }
   ],
   "meta": {
@@ -315,20 +535,17 @@ Lista propiedades del tenant con paginación y filtros opcionales.
 
 ### `POST /api/properties`
 
-Crea una propiedad nueva en estado `draft`.
-
-**Headers:** `Authorization: Bearer <token>`
+Crea una propiedad en estado `draft`. Requiere `property:create`.
 
 **Body**
 ```json
 {
   "title": "Casa en Palermo",
-  "description": "Hermosa casa con jardín, 3 dormitorios, cochera.",
+  "description": "Hermosa casa con jardín.",
   "type": "house",
   "operationType": "sale",
   "price": 180000,
   "currency": "USD",
-  "expenses": 15000,
   "address": {
     "street": "Thames",
     "number": "1234",
@@ -347,48 +564,18 @@ Crea una propiedad nueva en estado `draft`.
     "garages": 1,
     "age": 10
   },
-  "amenities": ["pileta", "quincho", "seguridad 24hs"],
+  "amenities": ["pileta", "quincho"],
   "assignedUserId": "2c568973-..."
 }
 ```
 
-> `slug`, `expenses`, `description`, `assignedUserId` son opcionales.
-> `status` siempre arranca en `draft` — publicar con el endpoint `/publish`.
-
-**Response 201**
-```json
-{
-  "data": {
-    "id": "...",
-    "title": "Casa en Palermo",
-    "slug": "casa-en-palermo",
-    "description": "Hermosa casa con jardín...",
-    "type": "house",
-    "operationType": "sale",
-    "status": "draft",
-    "price": 180000,
-    "currency": "USD",
-    "expenses": 15000,
-    "address": { "...": "..." },
-    "features": { "...": "..." },
-    "amenities": ["pileta", "quincho", "seguridad 24hs"],
-    "images": [],
-    "publishedAt": null,
-    "createdAt": "2026-04-20T10:00:00.000Z",
-    "updatedAt": "2026-04-20T10:00:00.000Z"
-  }
-}
-```
+**Response 201** — objeto completo de la propiedad creada.
 
 ---
 
 ### `GET /api/properties/:id`
 
-Devuelve el detalle completo de una propiedad.
-
-**Headers:** `Authorization: Bearer <token>`
-
-**Response 200** — misma forma que el objeto `data` del POST arriba.
+Detalle de una propiedad. Requiere `property:read`.
 
 **Response 404**
 ```json
@@ -399,51 +586,31 @@ Devuelve el detalle completo de una propiedad.
 
 ### `PATCH /api/properties/:id`
 
-Edita campos de una propiedad. Todos los campos son opcionales — solo se actualizan los que se envían.
+Edita campos. Todos opcionales. Requiere `property:update`.
 
-**Headers:** `Authorization: Bearer <token>`
-
-**Body** (todos opcionales)
 ```json
 {
   "title": "Casa en Palermo — con jardín",
   "price": 185000,
   "status": "reserved",
-  "features": {
-    "bathrooms": 3
-  },
-  "assignedUserId": "2c568973-...",
+  "assignedUserId": null
 }
 ```
-
-> Para des-asignar usuario: `"assignedUserId": null`
-> No se puede editar una propiedad archivada.
-
-**Response 200** — objeto `data` completo actualizado.
 
 ---
 
 ### `PATCH /api/properties/:id/publish`
 
-Publica o pausa una propiedad. Requiere permiso `property:publish`.
+Publica o pausa. Requiere `property:publish`.
 
-**Headers:** `Authorization: Bearer <token>`
-
-**Body**
 ```json
 { "publish": true }
 ```
-> `publish: true` → estado `active`, setea `publishedAt` si no tenía.
-> `publish: false` → estado `paused`.
 
 **Response 200**
 ```json
 {
-  "data": {
-    "id": "...",
-    "status": "active",
-    "publishedAt": "2026-04-20T12:00:00.000Z"
-  },
+  "data": { "id": "...", "status": "active", "publishedAt": "2026-04-25T12:00:00.000Z" },
   "message": "Propiedad publicada."
 }
 ```
@@ -452,21 +619,119 @@ Publica o pausa una propiedad. Requiere permiso `property:publish`.
 
 ### `DELETE /api/properties/:id`
 
-Archiva la propiedad (baja lógica — no se borra de la DB). Requiere permiso `property:delete`.
+Archiva (baja lógica). Requiere `property:delete`.
 
-**Headers:** `Authorization: Bearer <token>`
-
-**Response 204** (sin body)
+**Response 204**
 
 ---
 
-## Usuarios del tenant
+## Contactos
+
+### `GET /api/contacts`
+
+Lista contactos. Requiere `contact:read`.
+
+**Query params:** `search`, `type` (`client` `owner` `both`), `page`, `perPage`
+
+---
+
+### `POST /api/contacts`
+
+Crea contacto. Requiere `contact:create`.
+
+---
+
+### `GET /api/contacts/:id`
+
+Detalle de contacto.
+
+---
+
+### `PATCH /api/contacts/:id`
+
+Edita contacto. Requiere `contact:update`.
+
+---
+
+### `DELETE /api/contacts/:id`
+
+Archiva contacto. Requiere `contact:delete`.
+
+---
+
+## CRM — Leads
+
+### `GET /api/crm/leads`
+
+Lista leads del pipeline. Requiere `crm:read`.
+
+**Query params:** `status`, `assignedUserId`, `page`, `perPage`
+
+---
+
+### `POST /api/crm/leads`
+
+Crea lead. Requiere `crm:create`.
+
+---
+
+### `GET /api/crm/leads/:id`
+
+Detalle de lead con historial de actividades.
+
+---
+
+### `PATCH /api/crm/leads/:id`
+
+Edita lead. Requiere `crm:update`.
+
+---
+
+### `DELETE /api/crm/leads/:id`
+
+Archiva lead. Requiere `crm:delete`.
+
+---
+
+## Agenda
+
+### `GET /api/agenda`
+
+Lista eventos del calendario. Requiere `agenda:read`.
+
+**Query params:** `from` (ISO date), `to` (ISO date), `assignedUserId`
+
+---
+
+### `POST /api/agenda`
+
+Crea evento. Requiere `agenda:create`.
+
+---
+
+### `GET /api/agenda/:id`
+
+Detalle de evento.
+
+---
+
+### `PATCH /api/agenda/:id`
+
+Edita evento. Requiere `agenda:update`.
+
+---
+
+### `DELETE /api/agenda/:id`
+
+Elimina evento. Requiere `agenda:delete`.
+
+---
+
+## Configuración — Usuarios
 
 ### `GET /api/settings/users`
 
-Lista todos los usuarios de la inmobiliaria.
-
-**Headers:** `Authorization: Bearer <token>` — requiere permiso `user:read`
+Lista usuarios de la inmobiliaria. Requiere `user:read`.
 
 **Response 200**
 ```json
@@ -481,7 +746,7 @@ Lista todos los usuarios de la inmobiliaria.
       "roles": ["owner"],
       "groups": [],
       "isActive": true,
-      "lastLoginAt": "2026-04-20T01:32:00.000Z",
+      "lastLoginAt": "2026-04-25T01:32:00.000Z",
       "createdAt": "2026-04-19T14:57:00.000Z"
     }
   ]
@@ -492,10 +757,7 @@ Lista todos los usuarios de la inmobiliaria.
 
 ### `POST /api/settings/users`
 
-Invita un nuevo usuario al tenant. Requiere permiso `user:create`.
-El admin debe asignar una contraseña con `PATCH /api/settings/users/:id`.
-
-**Headers:** `Authorization: Bearer <token>`
+Invita nuevo usuario. Requiere `user:create`.
 
 **Body**
 ```json
@@ -512,29 +774,16 @@ El admin debe asignar una contraseña con `PATCH /api/settings/users/:id`.
 **Response 201**
 ```json
 {
-  "data": {
-    "id": "...",
-    "email": "nuevo@ejemplo.com",
-    "firstName": "Ana",
-    "lastName": "López",
-    "roles": ["agente"]
-  },
+  "data": { "id": "...", "email": "nuevo@ejemplo.com", "roles": ["agente"] },
   "message": "Usuario creado. El admin debe asignar una contraseña: PATCH /api/settings/users/<id>"
 }
 ```
-
-**Errores**
-| Status | Cuándo |
-|--------|--------|
-| 409 | Email ya existe en este tenant |
 
 ---
 
 ### `GET /api/settings/users/:id`
 
-Detalle de un usuario con sus permisos efectivos resueltos.
-
-**Headers:** `Authorization: Bearer <token>` — requiere `user:read`
+Detalle con permisos efectivos resueltos. Requiere `user:read`.
 
 **Response 200**
 ```json
@@ -542,22 +791,10 @@ Detalle de un usuario con sus permisos efectivos resueltos.
   "data": {
     "id": "...",
     "email": "agente@demo.com",
-    "firstName": "Agente",
-    "lastName": "Demo",
-    "phone": null,
-    "avatarUrl": null,
     "roles": ["agente"],
     "groups": [],
     "permissionOverrides": null,
     "isActive": true,
-    "twoFactorEnabled": false,
-    "preferences": {
-      "theme": "dark",
-      "language": "es",
-      "timezone": "America/Argentina/Buenos_Aires"
-    },
-    "lastLoginAt": null,
-    "createdAt": "2026-04-19T14:57:00.000Z",
     "permissions": ["contact:create", "contact:read", "property:create", "..."]
   }
 }
@@ -567,10 +804,7 @@ Detalle de un usuario con sus permisos efectivos resueltos.
 
 ### `PATCH /api/settings/users/:id`
 
-Edita un usuario. Requiere permiso `user:update`.
-No se puede cambiar el rol del owner.
-
-**Headers:** `Authorization: Bearer <token>`
+Edita usuario. Requiere `user:update`. No se puede cambiar el rol del owner.
 
 **Body** (todos opcionales)
 ```json
@@ -589,48 +823,23 @@ No se puede cambiar el rol del owner.
 }
 ```
 
-> `groups` valores disponibles: `property:viewer` `property:editor` `property:manager` `contact:viewer` `contact:editor` `contact:manager` `crm:viewer` `crm:manager` `report:viewer` `report:manager` `settings:viewer` `user:manager` `hub:publisher`
-
-**Response 200**
-```json
-{
-  "data": {
-    "id": "...",
-    "email": "agente@demo.com",
-    "firstName": "Ana",
-    "lastName": "González",
-    "roles": ["coordinador"],
-    "groups": ["report:viewer", "contact:manager"],
-    "permissionOverrides": {
-      "grant": ["report:export"],
-      "deny": ["property:delete"]
-    },
-    "isActive": true
-  }
-}
-```
+> `groups` disponibles: `property:viewer` `property:editor` `property:manager` `contact:viewer` `contact:editor` `contact:manager` `crm:viewer` `crm:manager` `report:viewer` `report:manager` `settings:viewer` `user:manager` `hub:publisher`
 
 ---
 
 ### `DELETE /api/settings/users/:id`
 
-Desactiva un usuario (baja lógica — no se borra). No se puede desactivar al owner.
-Requiere permiso `user:delete`.
+Desactiva usuario (baja lógica). No se puede desactivar al owner. Requiere `user:delete`.
 
-**Headers:** `Authorization: Bearer <token>`
-
-**Response 204** (sin body)
+**Response 204**
 
 ---
 
-## Permisos
+## Configuración — Permisos
 
 ### `GET /api/settings/permissions`
 
-Devuelve la config de permisos del tenant + catálogo completo de grupos disponibles.
-Requiere `settings:read`.
-
-**Headers:** `Authorization: Bearer <token>`
+Config de permisos del tenant + catálogo de grupos. Requiere `settings:read`.
 
 **Response 200**
 ```json
@@ -641,7 +850,6 @@ Requiere `settings:read`.
       {
         "id": "property:manager",
         "name": "Propiedades — Gestor",
-        "description": "Control total: publicar, eliminar y exportar propiedades.",
         "permissions": ["property:create", "property:read", "property:update", "property:delete", "property:publish", "property:export"],
         "impliedGroups": ["property:editor"]
       }
@@ -654,10 +862,7 @@ Requiere `settings:read`.
 
 ### `PUT /api/settings/permissions/roles`
 
-Customiza los permisos de un rol para toda la inmobiliaria (capa 3 del sistema).
-Requiere `settings:manage`.
-
-**Headers:** `Authorization: Bearer <token>`
+Override de permisos para un rol en toda la inmobiliaria (capa 3 del sistema). Requiere `settings:manage`.
 
 **Body**
 ```json
@@ -668,31 +873,11 @@ Requiere `settings:manage`.
 }
 ```
 
-> `role` valores: `administrador` `coordinador` `agente` `captador`
-
-**Response 200**
-```json
-{
-  "data": {
-    "roleOverrides": {
-      "agente": {
-        "grant": ["report:read"],
-        "deny": ["property:delete"]
-      }
-    }
-  },
-  "message": "Permisos del rol \"agente\" actualizados."
-}
-```
-
 ---
 
 ### `GET /api/settings/permissions/resolve/:userId`
 
-Vista de diagnóstico: permisos efectivos de un usuario específico (todas las capas resueltas).
-Requiere `settings:manage`.
-
-**Headers:** `Authorization: Bearer <token>`
+Permisos efectivos de un usuario (todas las capas resueltas). Requiere `settings:manage`.
 
 **Response 200**
 ```json
@@ -702,11 +887,7 @@ Requiere `settings:manage`.
     "email": "agente@demo.com",
     "roles": ["agente"],
     "groups": ["report:viewer"],
-    "permissionOverrides": {
-      "grant": ["report:export"],
-      "deny": ["property:delete"]
-    },
-    "effectivePermissions": ["contact:create", "property:create", "report:read", "report:export", "..."],
+    "effectivePermissions": ["contact:create", "property:create", "report:read", "..."],
     "totalCount": 12
   }
 }
@@ -720,10 +901,12 @@ El middleware de licencia puede responder en cualquier endpoint protegido:
 
 | Status | code | Situación | Qué hacer en el frontend |
 |--------|------|-----------|--------------------------|
+| 400 | `TENANT_MISSING` | Falta header X-Tenant | Mostrar selector de inmobiliaria |
+| 404 | `TENANT_NOT_FOUND` | Subdomain no existe | Redirigir a pantalla de inicio |
 | 402 | `TRIAL_EXPIRED` | Trial vencido | Redirigir a `/settings/billing` |
 | 402 | `PLAN_LIMIT_REACHED` | Límite del plan alcanzado | Mostrar modal de upgrade |
-| 402 | `FEATURE_NOT_IN_PLAN` | Feature no disponible en el plan | Mostrar mensaje de upgrade |
-| 403 | `ACCOUNT_SUSPENDED` | Cuenta suspendida (solo GET pasa) | Mostrar banner de pago pendiente |
+| 402 | `FEATURE_NOT_IN_PLAN` | Feature no disponible | Mostrar mensaje de upgrade |
+| 403 | `ACCOUNT_SUSPENDED` | Cuenta suspendida | Mostrar banner de pago pendiente |
 | 403 | `ACCOUNT_CANCELLED` | Cuenta cancelada | Mostrar pantalla de reactivación |
 
 **Respuesta 402 PLAN_LIMIT_REACHED**
