@@ -8,18 +8,23 @@
   "scripts": {
     "dev": "nodemon --watch src --ext ts --exec \"tsc -p tsconfig.build.json && node --env-file=../../.env dist/index.js\"",
     "build": "tsc -p tsconfig.build.json",
-    "prebuild": "pnpm --filter @inmob/shared build && pnpm --filter @inmob/database build",
+    "prebuild": "pnpm --filter @inmob/shared build && pnpm --filter @inmob/database build && pnpm --filter @inmob/platform build",
     "start": "node --env-file=../../.env dist/index.js",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "cross-env NODE_OPTIONS=--max-old-space-size=2048 vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.2",
     "@fastify/helmet": "^13.0.1",
     "@inmob/database": "workspace:*",
+    "@inmob/platform": "workspace:*",
     "@inmob/shared": "workspace:*",
     "@mikro-orm/core": "^6.4.3",
     "@mikro-orm/postgresql": "^6.4.3",
+    "@mikro-orm/reflection": "^6.6.13",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.5.0",
     "fastify": "^5.3.3",
@@ -29,8 +34,11 @@
   },
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
+    "@vitest/coverage-v8": "^4.1.5",
+    "cross-env": "^10.1.0",
     "nodemon": "^3.1.14",
     "tsx": "^4.19.4",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.5"
   }
 }
