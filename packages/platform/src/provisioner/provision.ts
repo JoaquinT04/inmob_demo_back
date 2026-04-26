@@ -47,17 +47,18 @@ export interface ProvisionResult {
 async function createNeonDatabase(dbName: string): Promise<string> {
   const apiKey = process.env['NEON_API_KEY'];
   const projectId = process.env['NEON_PROJECT_ID'];
+  const branchId = process.env['NEON_BRANCH_ID'];
   const dbOwner = process.env['NEON_DB_OWNER'] ?? 'neondb_owner';
   // NEON_DB_HOST: conexión PostgreSQL sin nombre de DB
   // ej: postgresql://neondb_owner:PASSWORD@ep-xxx.neon.tech
   const dbHost = process.env['NEON_DB_HOST'];
 
-  if (!apiKey || !projectId || !dbHost) {
-    throw new Error('NEON_API_KEY, NEON_PROJECT_ID y NEON_DB_HOST son requeridos');
+  if (!apiKey || !projectId || !branchId || !dbHost) {
+    throw new Error('NEON_API_KEY, NEON_PROJECT_ID, NEON_BRANCH_ID y NEON_DB_HOST son requeridos');
   }
 
   const res = await fetch(
-    `https://console.neon.tech/api/v2/projects/${projectId}/databases`,
+    `https://console.neon.tech/api/v2/projects/${projectId}/branches/${branchId}/databases`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
