@@ -48,10 +48,12 @@ async function createNeonDatabase(dbName: string): Promise<string> {
   const apiKey = process.env['NEON_API_KEY'];
   const projectId = process.env['NEON_PROJECT_ID'];
   const dbOwner = process.env['NEON_DB_OWNER'] ?? 'neondb_owner';
-  const baseUrl = process.env['NEON_BASE_URL'];
+  // NEON_DB_HOST: conexión PostgreSQL sin nombre de DB
+  // ej: postgresql://neondb_owner:PASSWORD@ep-xxx.neon.tech
+  const dbHost = process.env['NEON_DB_HOST'];
 
-  if (!apiKey || !projectId || !baseUrl) {
-    throw new Error('NEON_API_KEY, NEON_PROJECT_ID y NEON_BASE_URL son requeridos');
+  if (!apiKey || !projectId || !dbHost) {
+    throw new Error('NEON_API_KEY, NEON_PROJECT_ID y NEON_DB_HOST son requeridos');
   }
 
   const res = await fetch(
@@ -68,7 +70,7 @@ async function createNeonDatabase(dbName: string): Promise<string> {
     throw new Error(`Neon API error (${res.status}): ${body}`);
   }
 
-  return `${baseUrl}/${dbName}?sslmode=require`;
+  return `${dbHost}/${dbName}?sslmode=require&channel_binding=require`;
 }
 
 // ─── Migrations en la nueva DB ────────────────────────────────────────────────

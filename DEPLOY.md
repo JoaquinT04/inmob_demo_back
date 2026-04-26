@@ -45,9 +45,9 @@ Configurar en Render → Service → Environment:
 | `JWT_EXPIRY` | `7d` | — |
 | `TRIAL_DAYS` | `30` | — |
 | `NEON_API_KEY` | `...` | API key de Neon — para crear DBs al provisionar nuevos tenants |
-| `NEON_PROJECT_ID` | `...` | ID del proyecto Neon |
+| `NEON_PROJECT_ID` | `...` | ID del proyecto Neon (ej: `br-calm-heart-aca8361n` no, ese es el branch — ver Project Settings) |
 | `NEON_DB_OWNER` | `neondb_owner` | Role dueño de las DBs |
-| `NEON_BASE_URL` | `https://console.neon.tech/api/v2` | URL de la API de Neon |
+| `NEON_DB_HOST` | `postgresql://neondb_owner:PASSWORD@ep-xxx.neon.tech` | Host PostgreSQL SIN nombre de DB (se le agrega `/{dbname}` al provisionar) |
 
 > `DATABASE_URL` ya **no se usa** — cada tenant tiene su URL en `tenant_registry.database_url`.
 
