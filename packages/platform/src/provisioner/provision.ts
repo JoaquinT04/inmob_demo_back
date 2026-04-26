@@ -71,13 +71,19 @@ async function createNeonDatabase(dbName: string): Promise<string> {
     throw new Error(`Neon API error (${res.status}): ${body}`);
   }
 
-  return `${dbHost}/${dbName}?sslmode=require`;
+  const host = dbHost.replace(/\/$/, '');
+  return `${host}/${dbName}?sslmode=require`;
 }
 
 // ─── Migrations en la nueva DB ────────────────────────────────────────────────
 
 async function runTenantMigrations(databaseUrl: string): Promise<void> {
-  const orm = await MikroORM.init({ ...tenantDbConfig, clientUrl: databaseUrl });
+  console.log('[provision] running migrations on:', databaseUrl.replace(/:\/\/[^@]+@/, '://***@'));
+  const orm = await MikroORM.init({
+    ...tenantDbConfig,
+    clientUrl: databaseUrl,
+    driverOptions: { connection: { ssl: { rejectUnauthorized: false } } },
+  });
   try {
     await orm.getMigrator().up();
   } finally {
