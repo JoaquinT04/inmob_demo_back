@@ -1,15 +1,10 @@
-import { Entity, Filter, ManyToOne, Property as Prop, Ref } from '@mikro-orm/core';
+import { Entity, ManyToOne, Property as Prop, Ref } from '@mikro-orm/core';
 import type { Currency, OperationType, PropertyStatus, PropertyType } from '@inmob/shared';
 import { BaseEntity } from './BaseEntity.js';
 import { Tenant } from './Tenant.entity.js';
 import { User } from './User.entity.js';
 
 @Entity({ tableName: 'properties' })
-@Filter({
-  name: 'byTenant',
-  cond: (args: { tenantId: string }) => ({ tenant: { id: args.tenantId } }),
-  default: false,
-})
 export class Property extends BaseEntity {
   @Prop()
   title!: string;

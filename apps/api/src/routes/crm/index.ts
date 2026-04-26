@@ -8,8 +8,8 @@ export async function crmRoutes(app: FastifyInstance) {
     '/leads',
     { preHandler: [requireAuth, requirePermission('crm:read')] },
     async (request, reply) => {
-      const em = app.orm.em.fork();
-      const leads = await em.find(Lead, { tenant: { id: request.auth!.tenantId } });
+      const em = request.orm.em.fork();
+      const leads = await em.find(Lead, {});
       return reply.send({ data: leads });
     },
   );

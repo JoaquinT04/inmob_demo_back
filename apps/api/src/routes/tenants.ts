@@ -1,11 +1,12 @@
 /**
  * GET  /api/tenants/me           → Datos del tenant del usuario autenticado
  * PUT  /api/tenants/me           → Actualizar datos de la inmobiliaria
- * GET  /api/tenants/branding/:slug → Branding público (sin auth, para pantalla de login)
+ * GET  /api/tenants/branding/:subdomain → Branding público (sin auth, para pantalla de login)
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { Tenant } from '@inmob/database';
+import { TenantRegistry } from '@inmob/platform';
 import { requireAuth } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/permissions.js';
 
@@ -37,8 +38,8 @@ const updateTenantSchema = z.object({
 
 export async function tenantRoutes(app: FastifyInstance) {
   app.get('/me', { preHandler: requireAuth }, async (request, reply) => {
-    const em = app.orm.em.fork();
-    const tenant = await em.findOne(Tenant, { id: request.auth!.tenantId });
+    const em = request.orm.em.fork();
+    const tenant = await em.findOne(Tenant, {});
 
     if (!tenant) {
       return reply.status(404).send({ error: 'Tenant no encontrado' });
@@ -56,8 +57,8 @@ export async function tenantRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: 'Datos inválidos', details: result.error.flatten() });
       }
 
-      const em = app.orm.em.fork();
-      const tenant = await em.findOne(Tenant, { id: request.auth!.tenantId });
+      const em = request.orm.em.fork();
+      const tenant = await em.findOne(Tenant, {});
 
       if (!tenant) {
         return reply.status(404).send({ error: 'Tenant no encontrado' });
@@ -75,20 +76,21 @@ export async function tenantRoutes(app: FastifyInstance) {
     },
   );
 
-  app.get('/branding/:slug', async (request, reply) => {
-    const { slug } = request.params as { slug: string };
-    const em = app.orm.em.fork();
-    const tenant = await em.findOne(Tenant, { slug });
+  // Public branding endpoint — uses platform registry for basic info
+  app.get('/branding/:subdomain', async (request, reply) => {
+    const { subdomain } = request.params as { subdomain: string };
+    const platformEm = app.platformOrm.em.fork();
+    const registry = await platformEm.findOne(TenantRegistry, { subdomain });
 
-    if (!tenant) {
+    if (!registry) {
       return reply.status(404).send({ error: 'Inmobiliaria no encontrada' });
     }
 
     return reply.send({
       data: {
-        name: tenant.name,
-        logoUrl: tenant.logoUrl ?? null,
-        coverImageUrl: tenant.coverImageUrl ?? null,
+        subdomain: registry.subdomain,
+        name: registry.name,
+        logoUrl: registry.logoUrl ?? null,
       },
     });
   });

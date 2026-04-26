@@ -1,13 +1,3 @@
-/**
- * Middleware de autorización basado en permisos (RBAC 5 capas).
- *
- * Uso:
- *   app.delete('/prop/:id', {
- *     preHandler: [requireAuth, requirePermission('property:delete')]
- *   }, handler)
- *
- * Adjunta request.currentUser para que el handler no repita la query.
- */
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Permission } from '@inmob/shared';
 import { Tenant, User } from '@inmob/database';
@@ -20,7 +10,7 @@ export function requirePermission(permission: Permission) {
       return reply.status(401).send({ error: 'No autenticado', code: 'UNAUTHENTICATED' });
     }
 
-    const em = request.server.orm.em.fork();
+    const em = request.orm.em.fork();
 
     const user = await em.findOne(User, { id: auth.userId });
 
@@ -28,7 +18,7 @@ export function requirePermission(permission: Permission) {
       return reply.status(403).send({ error: 'Usuario no encontrado o inactivo', code: 'USER_INACTIVE' });
     }
 
-    const tenant = await em.findOne(Tenant, { id: auth.tenantId });
+    const tenant = await em.findOne(Tenant, {});
     const effective = resolvePermissions(user, tenant?.permissionConfig);
 
     if (!effective.has(permission)) {
@@ -51,7 +41,7 @@ export function requireRole(...roles: string[]) {
       return reply.status(401).send({ error: 'No autenticado', code: 'UNAUTHENTICATED' });
     }
 
-    const em = request.server.orm.em.fork();
+    const em = request.orm.em.fork();
     const user = await em.findOne(User, { id: auth.userId });
 
     if (!user || !user.isActive) {

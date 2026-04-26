@@ -1,12 +1,3 @@
-/**
- * Gestión de usuarios del tenant.
- *
- * GET    /api/settings/users          → Listar usuarios
- * POST   /api/settings/users          → Invitar usuario
- * GET    /api/settings/users/:id      → Ver usuario
- * PATCH  /api/settings/users/:id      → Editar (rol, grupos, overrides, estado)
- * DELETE /api/settings/users/:id      → Desactivar (baja lógica)
- */
 import type { FastifyInstance } from 'fastify';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
@@ -32,10 +23,8 @@ const updateUserSchema = z.object({
     deny: z.array(z.string()),
   }).optional(),
   isActive: z.boolean().optional(),
-  // DEV only: cambiar password
   password: z.string().min(4).optional(),
 });
-
 
 export async function usersSettingsRoutes(app: FastifyInstance) {
   // ── GET /api/settings/users ──────────────────────────────────────────────
@@ -43,12 +32,8 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
     '/',
     { preHandler: [requireAuth, requirePermission('user:read')] },
     async (request, reply) => {
-      const em = app.orm.em.fork();
-      const users = await em.find(
-        User,
-        { tenant: { id: request.auth!.tenantId } },
-        { orderBy: { roles: 'ASC', firstName: 'ASC' } },
-      );
+      const em = request.orm.em.fork();
+      const users = await em.find(User, {}, { orderBy: { firstName: 'ASC' } });
 
       return reply.send({
         data: users.map((u) => ({
@@ -78,19 +63,16 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
       }
 
       const { email, firstName, lastName, role } = result.data;
-      const em = app.orm.em.fork();
+      const em = request.orm.em.fork();
 
-      const existing = await em.findOne(User, { email, tenant: { id: request.auth!.tenantId } });
+      const existing = await em.findOne(User, { email });
       if (existing) {
-        return reply.status(409).send({ error: 'Ya existe un usuario con ese email en este tenant' });
+        return reply.status(409).send({ error: 'Ya existe un usuario con ese email' });
       }
+
+      const tenant = await em.findOne(Tenant, {});
 
       const tempId = crypto.randomUUID();
-      const tenantId = request.auth!.tenantId;
-      let tenant = await em.findOne(Tenant, { id: tenantId });
-      if (!tenant || !tenant.name) {
-        tenant = await em.refresh(tenant ?? em.getReference(Tenant, tenantId)) ?? await em.findOneOrFail(Tenant, { id: tenantId });
-      }
       const user = em.create(User, {
         clerkId: tempId,
         email,
@@ -104,14 +86,8 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
       });
 
       await em.flush();
-
-      // Sincronizar clerkId con el ID real de la DB (en MVP, autorreferencia)
-      // Al integrar un proveedor externo: reemplazar por el ID del proveedor
       user.clerkId = user.id;
       await em.flush();
-
-      // TODO: enviar email de invitación con link de activación de contraseña
-      // En MVP: el admin setea la contraseña manualmente via PATCH /api/settings/users/:id
 
       return reply.status(201).send({
         data: {
@@ -121,7 +97,7 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
           lastName: user.lastName,
           roles: user.roles,
         },
-        message: `Usuario creado. El admin debe asignar una contraseña: PATCH /api/settings/users/${user.id}`,
+        message: `Usuario creado. Asignar contraseña: PATCH /api/settings/users/${user.id}`,
       });
     },
   );
@@ -132,9 +108,9 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
     { preHandler: [requireAuth, requirePermission('user:read')] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const em = app.orm.em.fork();
+      const em = request.orm.em.fork();
 
-      const user = await em.findOne(User, { id, tenant: { id: request.auth!.tenantId } });
+      const user = await em.findOne(User, { id });
       if (!user) {
         return reply.status(404).send({ error: 'Usuario no encontrado' });
       }
@@ -174,13 +150,12 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: 'Datos inválidos', details: result.error.flatten() });
       }
 
-      const em = app.orm.em.fork();
-      const user = await em.findOne(User, { id, tenant: { id: request.auth!.tenantId } });
+      const em = request.orm.em.fork();
+      const user = await em.findOne(User, { id });
       if (!user) {
         return reply.status(404).send({ error: 'Usuario no encontrado' });
       }
 
-      // No se puede cambiar el rol del owner
       if (user.roles.includes(SystemRole.OWNER) && result.data.role) {
         return reply.status(403).send({ error: 'No se puede cambiar el rol del owner.' });
       }
@@ -194,10 +169,7 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
       if (groups !== undefined) user.groups = groups as SystemGroup[];
       if (permissionOverrides !== undefined) user.permissionOverrides = permissionOverrides as never;
       if (isActive !== undefined) user.isActive = isActive;
-
-      if (password) {
-        user.passwordHash = await bcrypt.hash(password, 10);
-      }
+      if (password) user.passwordHash = await bcrypt.hash(password, 10);
 
       await em.flush();
 
@@ -222,9 +194,9 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
     { preHandler: [requireAuth, requirePermission('user:delete')] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const em = app.orm.em.fork();
+      const em = request.orm.em.fork();
 
-      const user = await em.findOne(User, { id, tenant: { id: request.auth!.tenantId } });
+      const user = await em.findOne(User, { id });
       if (!user) {
         return reply.status(404).send({ error: 'Usuario no encontrado' });
       }

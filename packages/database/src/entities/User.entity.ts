@@ -1,23 +1,9 @@
-import { Entity, Filter, ManyToOne, Property, Ref } from '@mikro-orm/core';
+import { Entity, ManyToOne, Property, Ref } from '@mikro-orm/core';
 import type { SystemGroup, SystemRole, UserPermissionOverrides, UserPreferences } from '@inmob/shared';
 import { BaseEntity } from './BaseEntity.js';
 import { Tenant } from './Tenant.entity.js';
 
-/**
- * Usuario del sistema.
- *
- * MULTI-TENANT: El filtro 'byTenant' asegura que las queries solo devuelvan
- * usuarios del tenant activo. Siempre activar con em.addFilter('byTenant', ...).
- *
- * La autenticación la maneja Clerk en producción.
- * En DEV_BYPASS_AUTH mode se usa passwordHash + JWT local (jose).
- */
 @Entity({ tableName: 'users' })
-@Filter({
-  name: 'byTenant',
-  cond: (args: { tenantId: string }) => ({ tenant: { id: args.tenantId } }),
-  default: false,
-})
 export class User extends BaseEntity {
   /** ID de Clerk — puente entre Clerk y nuestra DB. En dev: "dev_<timestamp>" */
   @Property({ unique: true })

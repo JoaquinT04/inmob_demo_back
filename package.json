@@ -20,6 +20,9 @@
     "db:migrate": "pnpm --filter @inmob/database migration:up",
     "db:migrate:create": "pnpm --filter @inmob/database migration:create",
     "db:seed": "pnpm --filter @inmob/database seed",
+    "platform:migrate": "pnpm --filter @inmob/platform migration:up",
+    "platform:migrate:create": "pnpm --filter @inmob/platform migration:create",
+    "platform:seed": "pnpm --filter @inmob/platform seed",
     "docker:up": "docker-compose -f docker/docker-compose.yml up -d",
     "docker:down": "docker-compose -f docker/docker-compose.yml down",
     "docker:logs": "docker-compose -f docker/docker-compose.yml logs -f"

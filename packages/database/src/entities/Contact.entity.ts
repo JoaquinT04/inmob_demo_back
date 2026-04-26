@@ -1,15 +1,10 @@
-import { Entity, Filter, ManyToOne, Property, Ref } from '@mikro-orm/core';
+import { Entity, ManyToOne, Property, Ref } from '@mikro-orm/core';
 import type { ContactType } from '@inmob/shared';
 import { BaseEntity } from './BaseEntity.js';
 import { Tenant } from './Tenant.entity.js';
 import { User } from './User.entity.js';
 
 @Entity({ tableName: 'contacts' })
-@Filter({
-  name: 'byTenant',
-  cond: (args: { tenantId: string }) => ({ tenant: { id: args.tenantId } }),
-  default: false,
-})
 export class Contact extends BaseEntity {
   @Property()
   firstName!: string;

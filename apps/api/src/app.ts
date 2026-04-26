@@ -14,14 +14,24 @@ import { contactRoutes } from './routes/contacts/index.js';
 import { crmRoutes } from './routes/crm/index.js';
 import { agendaRoutes } from './routes/agenda/index.js';
 import { settingsRoutes } from './routes/settings/index.js';
+import { portalRoutes } from './routes/portal/index.js';
+import { registerTenantRoutingHook } from './hooks/tenant-routing.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
+    /** Platform-level ORM (TenantRegistry, HubProperty, billing) */
+    platformOrm: MikroORM;
+    /** @deprecated use request.orm — kept for legacy init path */
     orm: MikroORM;
+  }
+  interface FastifyRequest {
+    /** Tenant-specific ORM resolved from subdomain routing */
+    orm: MikroORM;
+    tenantSubdomain: string;
   }
 }
 
-export async function buildApp({ orm }: { orm: MikroORM }) {
+export async function buildApp({ orm, platformOrm }: { orm: MikroORM; platformOrm: MikroORM }) {
   const app = Fastify({
     logger: {
       level: process.env['NODE_ENV'] === 'development' ? 'debug' : 'info',
@@ -31,13 +41,19 @@ export async function buildApp({ orm }: { orm: MikroORM }) {
     },
   });
 
-  // ── Decorar instancia con ORM ────────────────────────────────────────────
+  // ── Decorar instancia ────────────────────────────────────────────────────
   app.decorate('orm', orm);
+  app.decorate('platformOrm', platformOrm);
+  app.decorateRequest('orm', null as never);
+  app.decorateRequest('tenantSubdomain', '');
 
-  // ── MikroORM: contexto por request (evita leaks de identity map) ─────────
+  // ── MikroORM: contexto por request ───────────────────────────────────────
   app.addHook('onRequest', (_req, _res, done) => {
-    RequestContext.create(orm.em, done);
+    RequestContext.create(platformOrm.em, done);
   });
+
+  // ── Subdomain → tenant ORM routing ──────────────────────────────────────
+  registerTenantRoutingHook(app);
 
   // ── Plugins de seguridad ─────────────────────────────────────────────────
   await app.register(helmet, { contentSecurityPolicy: false });
@@ -57,6 +73,7 @@ export async function buildApp({ orm }: { orm: MikroORM }) {
   await app.register(crmRoutes, { prefix: '/api/crm' });
   await app.register(agendaRoutes, { prefix: '/api/agenda' });
   await app.register(settingsRoutes, { prefix: '/api/settings' });
+  await app.register(portalRoutes, { prefix: '/api/portal' });
 
   // ── Error handler global ─────────────────────────────────────────────────
   app.setErrorHandler((error: Error & { statusCode?: number }, _req, reply) => {

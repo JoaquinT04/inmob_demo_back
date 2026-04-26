@@ -8,8 +8,8 @@ export async function contactRoutes(app: FastifyInstance) {
     '/',
     { preHandler: [requireAuth, requirePermission('contact:read')] },
     async (request, reply) => {
-      const em = app.orm.em.fork();
-      const contacts = await em.find(Contact, { tenant: { id: request.auth!.tenantId } });
+      const em = request.orm.em.fork();
+      const contacts = await em.find(Contact, {});
       return reply.send({ data: contacts });
     },
   );

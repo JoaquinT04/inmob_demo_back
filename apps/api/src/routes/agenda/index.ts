@@ -8,8 +8,8 @@ export async function agendaRoutes(app: FastifyInstance) {
     '/',
     { preHandler: [requireAuth, requirePermission('agenda:read')] },
     async (request, reply) => {
-      const em = app.orm.em.fork();
-      const events = await em.find(Agenda, { tenant: { id: request.auth!.tenantId } });
+      const em = request.orm.em.fork();
+      const events = await em.find(Agenda, {});
       return reply.send({ data: events });
     },
   );

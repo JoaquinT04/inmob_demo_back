@@ -1,16 +1,17 @@
 /**
  * /api/properties — CRUD completo de propiedades del tenant.
  *
- * GET    /api/properties           → Listar (con filtros opcionales)
- * POST   /api/properties           → Crear propiedad
- * GET    /api/properties/:id       → Ver detalle
- * PATCH  /api/properties/:id       → Editar
- * DELETE /api/properties/:id       → Archivar (baja lógica → status: archived)
+ * GET    /api/properties             → Listar (con filtros opcionales)
+ * POST   /api/properties             → Crear propiedad
+ * GET    /api/properties/:id         → Ver detalle
+ * PATCH  /api/properties/:id         → Editar
+ * DELETE /api/properties/:id         → Archivar (baja lógica → status: archived)
  * PATCH  /api/properties/:id/publish → Publicar / despublicar
  */
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { Property, User, Tenant } from '@inmob/database';
+import { raw } from '@mikro-orm/postgresql';
+import { Property, Tenant, User } from '@inmob/database';
 import {
   PropertyType,
   OperationType,
@@ -120,31 +121,49 @@ export async function propertyRoutes(app: FastifyInstance) {
         status,
         type,
         operationType,
+        city,
+        neighborhood,
+        priceMin,
+        priceMax,
+        rooms,
+        ageMax,
         page = '1',
         perPage = '20',
       } = request.query as Record<string, string>;
 
-      const em = app.orm.em.fork();
-      const tenantId = request.auth!.tenantId;
-
-      const where: Record<string, unknown> = { tenant: { id: tenantId } };
-      if (status) where['status'] = status;
-      if (type) where['type'] = type;
-      if (operationType) where['operationType'] = operationType;
+      const em = request.orm.em.fork();
 
       const pageNum = Math.max(1, Number(page));
       const perPageNum = Math.min(100, Math.max(1, Number(perPage)));
       const offset = (pageNum - 1) * perPageNum;
 
-      const [properties, total] = await em.findAndCount(
-        Property,
-        where,
-        {
-          orderBy: { createdAt: 'DESC' },
-          limit: perPageNum,
-          offset,
-        },
-      );
+      const qb = em.createQueryBuilder(Property, 'p');
+
+      if (status)        qb.andWhere({ status });
+      if (type)          qb.andWhere({ type });
+      if (operationType) qb.andWhere({ operationType });
+
+      if (priceMin) qb.andWhere({ price: { $gte: Number(priceMin) } });
+      if (priceMax) qb.andWhere({ price: { $lte: Number(priceMax) } });
+
+      if (city)         qb.andWhere(raw(`p.address->>'city' ILIKE ?`, [`%${city}%`]));
+      if (neighborhood) qb.andWhere(raw(`p.address->>'neighborhood' ILIKE ?`, [`%${neighborhood}%`]));
+
+      if (rooms) {
+        const roomsNum = Number(rooms);
+        if (roomsNum >= 5) {
+          qb.andWhere(raw(`(p.features->>'rooms')::int >= 5`));
+        } else {
+          qb.andWhere(raw(`(p.features->>'rooms')::int = ?`, [roomsNum]));
+        }
+      }
+      if (ageMax !== undefined && ageMax !== '') {
+        qb.andWhere(raw(`(p.features->>'age')::int <= ?`, [Number(ageMax)]));
+      }
+
+      qb.orderBy({ createdAt: 'DESC' }).limit(perPageNum).offset(offset);
+
+      const [properties, total] = await qb.getResultAndCount();
 
       return reply.send({
         data: properties.map((p) => ({
@@ -164,7 +183,7 @@ export async function propertyRoutes(app: FastifyInstance) {
             showExactAddress: p.address.showExactAddress,
           },
           features: p.features,
-          images: p.images.slice(0, 1), // solo imagen principal en el listado
+          images: p.images.slice(0, 1),
           publishedAt: p.publishedAt,
           createdAt: p.createdAt,
         })),
@@ -190,8 +209,7 @@ export async function propertyRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: 'Datos inválidos', details: result.error.flatten() });
       }
 
-      const em = app.orm.em.fork();
-      const tenantId = request.auth!.tenantId;
+      const em = request.orm.em.fork();
 
       const {
         title, slug: rawSlug, description, type, operationType,
@@ -201,13 +219,15 @@ export async function propertyRoutes(app: FastifyInstance) {
 
       const slug = await uniqueSlug(rawSlug ?? title, em);
 
-      let assignedUser: import('@inmob/database').User | null = null;
+      let assignedUser: User | null = null;
       if (assignedUserId) {
-        assignedUser = await em.findOne(User, { id: assignedUserId, tenant: { id: tenantId } });
+        assignedUser = await em.findOne(User, { id: assignedUserId });
         if (!assignedUser) {
           return reply.status(404).send({ error: 'Usuario asignado no encontrado' });
         }
       }
+
+      const tenant = await em.findOne(Tenant, {});
 
       const property = em.create(Property, {
         title,
@@ -223,7 +243,7 @@ export async function propertyRoutes(app: FastifyInstance) {
         features: features ?? {},
         amenities: amenities ?? [],
         images: [],
-        tenant: em.getReference(Tenant, tenantId) as never,
+        tenant: tenant as never,
         assignedUser: assignedUser ?? undefined,
       } as never);
 
@@ -239,13 +259,9 @@ export async function propertyRoutes(app: FastifyInstance) {
     { preHandler: [requireAuth, checkLicense, requirePermission('property:read')] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const em = app.orm.em.fork();
+      const em = request.orm.em.fork();
 
-      const property = await em.findOne(
-        Property,
-        { id, tenant: { id: request.auth!.tenantId } },
-        { populate: ['assignedUser'] },
-      );
+      const property = await em.findOne(Property, { id }, { populate: ['assignedUser'] });
 
       if (!property) {
         return reply.status(404).send({ error: 'Propiedad no encontrada' });
@@ -266,8 +282,8 @@ export async function propertyRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: 'Datos inválidos', details: result.error.flatten() });
       }
 
-      const em = app.orm.em.fork();
-      const property = await em.findOne(Property, { id, tenant: { id: request.auth!.tenantId } });
+      const em = request.orm.em.fork();
+      const property = await em.findOne(Property, { id });
 
       if (!property) {
         return reply.status(404).send({ error: 'Propiedad no encontrada' });
@@ -299,7 +315,7 @@ export async function propertyRoutes(app: FastifyInstance) {
         if (assignedUserId === null) {
           property.assignedUser = undefined;
         } else {
-          const user = await em.findOne(User, { id: assignedUserId, tenant: { id: request.auth!.tenantId } });
+          const user = await em.findOne(User, { id: assignedUserId });
           if (!user) return reply.status(404).send({ error: 'Usuario asignado no encontrado' });
           property.assignedUser = user as never;
         }
@@ -319,8 +335,8 @@ export async function propertyRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const { publish = true } = request.body as { publish?: boolean };
 
-      const em = app.orm.em.fork();
-      const property = await em.findOne(Property, { id, tenant: { id: request.auth!.tenantId } });
+      const em = request.orm.em.fork();
+      const property = await em.findOne(Property, { id });
 
       if (!property) {
         return reply.status(404).send({ error: 'Propiedad no encontrada' });
@@ -348,9 +364,9 @@ export async function propertyRoutes(app: FastifyInstance) {
     { preHandler: [requireAuth, checkLicense, requirePermission('property:delete')] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const em = app.orm.em.fork();
+      const em = request.orm.em.fork();
 
-      const property = await em.findOne(Property, { id, tenant: { id: request.auth!.tenantId } });
+      const property = await em.findOne(Property, { id });
 
       if (!property) {
         return reply.status(404).send({ error: 'Propiedad no encontrada' });

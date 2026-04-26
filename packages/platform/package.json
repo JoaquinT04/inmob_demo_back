@@ -1,0 +1,46 @@
+{
+  "name": "@inmob/platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Platform DB: registro de tenants, Hub de propiedades, provisionamiento",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./src/config.ts",
+      "default": "./dist/config.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "migration:create": "tsx src/scripts/migrate-create.ts",
+    "migration:up": "tsx src/scripts/migrate-up.ts",
+    "migration:down": "tsx src/scripts/migrate-down.ts",
+    "seed": "tsx src/seeds/run.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@inmob/shared": "workspace:*",
+    "@inmob/database": "workspace:*",
+    "@mikro-orm/core": "^6.4.3",
+    "@mikro-orm/migrations": "^6.4.3",
+    "@mikro-orm/postgresql": "^6.4.3",
+    "@mikro-orm/reflection": "^6.6.13",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^16.6.1",
+    "jose": "^6.2.2"
+  },
+  "devDependencies": {
+    "@mikro-orm/cli": "^6.4.3",
+    "@types/bcryptjs": "^3.0.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.4",
+    "typescript": "^6.0.2"
+  }
+}
