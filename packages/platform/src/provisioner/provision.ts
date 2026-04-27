@@ -16,7 +16,6 @@ import { Migrator } from '@mikro-orm/migrations';
 import bcrypt from 'bcryptjs';
 import { SignJWT } from 'jose';
 import tenantDbConfig from '@inmob/database/config';
-import { User, Tenant } from '@inmob/database';
 import { TenantPlan, TenantStatus, SystemRole, SubscriptionStatus } from '@inmob/shared';
 import { TenantRegistry } from '../entities/index.js';
 import type { MikroORM as PlatformORM } from '@mikro-orm/postgresql';
@@ -80,7 +79,7 @@ async function createNeonDatabase(dbName: string): Promise<string> {
   return `${cleanHost}/${dbName}?sslmode=require`;
 }
 
-// ─── Migrations + Tenant + Owner en un único ORM ─────────────────────────────
+// ─── Migrations + seed via raw SQL (evita MetadataError en producción) ───────
 
 async function setupTenantDb(
   databaseUrl: string,
@@ -95,65 +94,64 @@ async function setupTenantDb(
     driverOptions: isSsl ? { connection: { ssl: { rejectUnauthorized: false } } } : {},
   });
 
-  let ownerId: string;
-
   try {
     await orm.getMigrator().up();
-    console.log('[provision] migrations OK — creating tenant owner...');
+    console.log('[provision] migrations OK — seeding tenant + owner via raw SQL...');
 
-    const em = orm.em.fork();
-    await em.begin();
+    const conn = orm.em.getConnection();
+    const tenantId = crypto.randomUUID();
+    const ownerId = crypto.randomUUID();
+    const subId = crypto.randomUUID();
+    const now = new Date();
+    const trialEndsAt = new Date(now);
+    trialEndsAt.setDate(trialEndsAt.getDate() + Number(process.env['TRIAL_DAYS'] ?? 30));
+
+    const passwordHash = await bcrypt.hash(input.password, 10);
+
+    const settings = JSON.stringify({
+      locale: {
+        country: input.country ?? 'AR',
+        language: 'es',
+        timezone: input.timezone ?? 'America/Argentina/Buenos_Aires',
+        currency: input.country === 'AR' ? 'ARS' : 'USD',
+      },
+    });
+
+    await conn.execute('BEGIN');
     try {
-      const tenant = em.create(Tenant, {
-        name: input.name,
-        slug: input.subdomain,
-        status: TenantStatus.TRIAL,
-        plan: input.plan ?? TenantPlan.FREE,
-        taxId: input.taxId,
-        settings: {
-          locale: {
-            country: input.country ?? 'AR',
-            language: 'es',
-            timezone: input.timezone ?? 'America/Argentina/Buenos_Aires',
-            currency: input.country === 'AR' ? 'ARS' : 'USD',
-          },
-        },
-      });
+      await conn.execute(
+        `INSERT INTO "tenants" (id, created_at, updated_at, name, slug, status, plan, tax_id, settings)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [tenantId, now, now, input.name, input.subdomain, TenantStatus.TRIAL, input.plan ?? TenantPlan.FREE, input.taxId ?? null, settings],
+      );
 
-      const passwordHash = await bcrypt.hash(input.password, 10);
-      const tempId = crypto.randomUUID();
+      await conn.execute(
+        `INSERT INTO "users" (id, created_at, updated_at, clerk_id, email, first_name, last_name,
+          roles, is_active, two_factor_enabled, preferences, password_hash, tenant_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [ownerId, now, now, ownerId, input.ownerEmail, input.ownerFirstName, input.ownerLastName,
+          JSON.stringify([SystemRole.OWNER]), true, false,
+          JSON.stringify({ theme: 'dark', language: 'es', timezone: input.timezone ?? 'America/Argentina/Buenos_Aires' }),
+          passwordHash, tenantId],
+      );
 
-      const owner = em.create(User, {
-        clerkId: tempId,
-        email: input.ownerEmail,
-        firstName: input.ownerFirstName,
-        lastName: input.ownerLastName,
-        roles: [SystemRole.OWNER],
-        isActive: true,
-        twoFactorEnabled: false,
-        preferences: {
-          theme: 'dark',
-          language: 'es',
-          timezone: input.timezone ?? 'America/Argentina/Buenos_Aires',
-        },
-        tenant: tenant as never,
-        passwordHash,
-      });
+      await conn.execute(
+        `INSERT INTO "subscriptions" (id, created_at, updated_at, tenant_id, plan, status, trial_ends_at, cancel_at_period_end)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [subId, now, now, tenantId, input.plan ?? TenantPlan.FREE, SubscriptionStatus.TRIALING, trialEndsAt, false],
+      );
 
-      await em.flush();
-      owner.clerkId = owner.id;
-      ownerId = owner.id;
-      await em.flush();
-      await em.commit();
+      await conn.execute('COMMIT');
     } catch (err) {
-      await em.rollback();
+      await conn.execute('ROLLBACK');
       throw err;
     }
+
+    console.log('[provision] seed OK — ownerId:', ownerId);
+    return ownerId;
   } finally {
     await orm.close();
   }
-
-  return ownerId!;
 }
 
 // ─── Función principal ────────────────────────────────────────────────────────
