@@ -12,7 +12,6 @@
  *   APP_SECRET (para firmar el JWT de retorno)
  */
 import { MikroORM } from '@mikro-orm/postgresql';
-import { TsMorphMetadataProvider } from '@mikro-orm/reflection';
 import { Migrator } from '@mikro-orm/migrations';
 import bcrypt from 'bcryptjs';
 import { SignJWT } from 'jose';
@@ -81,86 +80,75 @@ async function createNeonDatabase(dbName: string): Promise<string> {
   return `${cleanHost}/${dbName}?sslmode=require`;
 }
 
-// ─── Migrations en la nueva DB ────────────────────────────────────────────────
+// ─── Migrations + Tenant + Owner en un único ORM ─────────────────────────────
 
-async function runTenantMigrations(databaseUrl: string): Promise<void> {
-  console.log('[provision] running migrations on:', databaseUrl.replace(/:\/\/[^@]+@/, '://***@'));
-  const orm = await MikroORM.init({
-    ...tenantDbConfig,
-    clientUrl: databaseUrl,
-    driverOptions: { connection: { ssl: { rejectUnauthorized: false } } },
-  });
-  try {
-    await orm.getMigrator().up();
-  } finally {
-    await orm.close();
-  }
-}
-
-// ─── Crear Tenant + owner en la nueva DB ─────────────────────────────────────
-
-async function createTenantOwner(
+async function setupTenantDb(
   databaseUrl: string,
   input: ProvisionInput,
 ): Promise<string> {
+  console.log('[provision] running migrations on:', databaseUrl.replace(/:\/\/[^@]+@/, '://***@'));
+
   const isSsl = databaseUrl.includes('sslmode=require');
   const orm = await MikroORM.init({
     ...tenantDbConfig,
     clientUrl: databaseUrl,
     driverOptions: isSsl ? { connection: { ssl: { rejectUnauthorized: false } } } : {},
-    metadataProvider: TsMorphMetadataProvider,
-    extensions: [Migrator],
   });
 
-  const em = orm.em.fork();
   let ownerId: string;
 
-  await em.begin();
   try {
-    const tenant = em.create(Tenant, {
-      name: input.name,
-      slug: input.subdomain,
-      status: TenantStatus.TRIAL,
-      plan: input.plan ?? TenantPlan.FREE,
-      taxId: input.taxId,
-      settings: {
-        locale: {
-          country: input.country ?? 'AR',
+    await orm.getMigrator().up();
+    console.log('[provision] migrations OK — creating tenant owner...');
+
+    const em = orm.em.fork();
+    await em.begin();
+    try {
+      const tenant = em.create(Tenant, {
+        name: input.name,
+        slug: input.subdomain,
+        status: TenantStatus.TRIAL,
+        plan: input.plan ?? TenantPlan.FREE,
+        taxId: input.taxId,
+        settings: {
+          locale: {
+            country: input.country ?? 'AR',
+            language: 'es',
+            timezone: input.timezone ?? 'America/Argentina/Buenos_Aires',
+            currency: input.country === 'AR' ? 'ARS' : 'USD',
+          },
+        },
+      });
+
+      const passwordHash = await bcrypt.hash(input.password, 10);
+      const tempId = crypto.randomUUID();
+
+      const owner = em.create(User, {
+        clerkId: tempId,
+        email: input.ownerEmail,
+        firstName: input.ownerFirstName,
+        lastName: input.ownerLastName,
+        roles: [SystemRole.OWNER],
+        isActive: true,
+        twoFactorEnabled: false,
+        preferences: {
+          theme: 'dark',
           language: 'es',
           timezone: input.timezone ?? 'America/Argentina/Buenos_Aires',
-          currency: input.country === 'AR' ? 'ARS' : 'USD',
         },
-      },
-    });
+        tenant: tenant as never,
+        passwordHash,
+      });
 
-    const passwordHash = await bcrypt.hash(input.password, 10);
-    const tempId = crypto.randomUUID();
-
-    const owner = em.create(User, {
-      clerkId: tempId,
-      email: input.ownerEmail,
-      firstName: input.ownerFirstName,
-      lastName: input.ownerLastName,
-      roles: [SystemRole.OWNER],
-      isActive: true,
-      twoFactorEnabled: false,
-      preferences: {
-        theme: 'dark',
-        language: 'es',
-        timezone: input.timezone ?? 'America/Argentina/Buenos_Aires',
-      },
-      tenant: tenant as never,
-      passwordHash,
-    });
-
-    await em.flush();
-    owner.clerkId = owner.id;
-    ownerId = owner.id;
-    await em.flush();
-    await em.commit();
-  } catch (err) {
-    await em.rollback();
-    throw err;
+      await em.flush();
+      owner.clerkId = owner.id;
+      ownerId = owner.id;
+      await em.flush();
+      await em.commit();
+    } catch (err) {
+      await em.rollback();
+      throw err;
+    }
   } finally {
     await orm.close();
   }
@@ -178,8 +166,7 @@ export async function provision(
   const dbName = `inmob_${subdomain.replace(/-/g, '_')}`;
 
   const databaseUrl = await createNeonDatabase(dbName);
-  await runTenantMigrations(databaseUrl);
-  const ownerId = await createTenantOwner(databaseUrl, input);
+  const ownerId = await setupTenantDb(databaseUrl, input);
 
   const trialEndsAt = new Date();
   trialEndsAt.setDate(trialEndsAt.getDate() + Number(process.env['TRIAL_DAYS'] ?? 30));
