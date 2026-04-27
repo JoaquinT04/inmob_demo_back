@@ -57,6 +57,25 @@ export async function portalRoutes(app: FastifyInstance) {
     }
   });
 
+  // ── GET /api/portal/neon-check ──────────────────────────────────────────
+  app.get('/neon-check', async (_request, reply) => {
+    const vars = {
+      NEON_API_KEY: process.env['NEON_API_KEY'] ? `set (${process.env['NEON_API_KEY'].slice(0, 8)}...)` : 'MISSING',
+      NEON_PROJECT_ID: process.env['NEON_PROJECT_ID'] ?? 'MISSING',
+      NEON_BRANCH_ID: process.env['NEON_BRANCH_ID'] ?? 'MISSING',
+      NEON_DB_HOST: (() => {
+        const h = process.env['NEON_DB_HOST'] ?? '';
+        if (!h) return 'MISSING';
+        const clean = h.replace(/\s+/g, '');
+        const valid = clean.startsWith('postgresql://') || clean.startsWith('postgres://');
+        return `${valid ? 'OK' : 'INVALID'} — starts with: "${h.slice(0, 25).replace(/\n/g, '\\n')}"`;
+      })(),
+      NEON_DB_OWNER: process.env['NEON_DB_OWNER'] ?? 'neondb_owner (default)',
+      PLATFORM_DATABASE_URL: process.env['PLATFORM_DATABASE_URL'] ? `set (${process.env['PLATFORM_DATABASE_URL'].slice(0, 30)}...)` : 'MISSING',
+    };
+    return reply.send({ neonConfig: vars });
+  });
+
   // ── GET /api/portal/hub ──────────────────────────────────────────────────
   app.get('/hub', async (request, reply) => {
     const {
