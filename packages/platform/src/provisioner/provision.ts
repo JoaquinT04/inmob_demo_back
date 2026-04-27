@@ -76,7 +76,11 @@ async function createNeonDatabase(dbName: string): Promise<string> {
     throw new Error(`Neon API error (${res.status}): ${body}`);
   }
 
-  return `${cleanHost}/${dbName}?sslmode=require`;
+  // URL pooler para uso normal (app connections).
+  // URL directa (sin -pooler) para setup: migrations + seed DDL.
+  const poolerUrl = `${cleanHost}/${dbName}?sslmode=require`;
+  const directUrl = poolerUrl.replace(/-pooler\.([\w-]+\.aws\.neon\.tech)/, '.$1');
+  return { poolerUrl, directUrl };
 }
 
 // ─── Migrations + seed via raw SQL (evita MetadataError en producción) ───────
@@ -163,8 +167,9 @@ export async function provision(
   const { subdomain, name, ownerEmail } = input;
   const dbName = `inmob_${subdomain.replace(/-/g, '_')}`;
 
-  const databaseUrl = await createNeonDatabase(dbName);
-  const ownerId = await setupTenantDb(databaseUrl, input);
+  const { poolerUrl, directUrl } = await createNeonDatabase(dbName);
+  console.log('[provision] directUrl for setup:', directUrl.replace(/:\/\/[^@]+@/, '://***@'));
+  const ownerId = await setupTenantDb(directUrl, input);
 
   const trialEndsAt = new Date();
   trialEndsAt.setDate(trialEndsAt.getDate() + Number(process.env['TRIAL_DAYS'] ?? 30));
@@ -174,7 +179,7 @@ export async function provision(
     subdomain,
     name,
     ownerEmail,
-    databaseUrl,
+    databaseUrl: poolerUrl,
     plan: input.plan ?? TenantPlan.FREE,
     status: TenantStatus.TRIAL,
     subscriptionStatus: SubscriptionStatus.TRIALING,
@@ -200,5 +205,5 @@ export async function provision(
     .setExpirationTime('7d')
     .sign(secret);
 
-  return { subdomain, databaseUrl, ownerId, token };
+  return { subdomain, databaseUrl: poolerUrl, ownerId, token };
 }
