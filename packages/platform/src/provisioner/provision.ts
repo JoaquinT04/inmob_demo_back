@@ -71,7 +71,7 @@ async function createNeonDatabase(dbName: string): Promise<string> {
     throw new Error(`Neon API error (${res.status}): ${body}`);
   }
 
-  const host = dbHost.replace(/\/$/, '');
+  const host = dbHost.trim().replace(/\/$/, '');
   return `${host}/${dbName}?sslmode=require`;
 }
 
