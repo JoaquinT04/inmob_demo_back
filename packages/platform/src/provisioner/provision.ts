@@ -13,6 +13,7 @@
  */
 import { MikroORM } from '@mikro-orm/postgresql';
 import { Migrator } from '@mikro-orm/migrations';
+import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import { SignJWT } from 'jose';
 import tenantDbConfig from '@inmob/database/config';
@@ -100,62 +101,66 @@ async function setupTenantDb(
 
   try {
     await orm.getMigrator().up();
-    console.log('[provision] migrations OK — seeding tenant + owner via raw SQL...');
-
-    const conn = orm.em.getConnection();
-    const tenantId = crypto.randomUUID();
-    const ownerId = crypto.randomUUID();
-    const subId = crypto.randomUUID();
-    const now = new Date();
-    const trialEndsAt = new Date(now);
-    trialEndsAt.setDate(trialEndsAt.getDate() + Number(process.env['TRIAL_DAYS'] ?? 30));
-
-    const passwordHash = await bcrypt.hash(input.password, 10);
-
-    const settings = JSON.stringify({
-      locale: {
-        country: input.country ?? 'AR',
-        language: 'es',
-        timezone: input.timezone ?? 'America/Argentina/Buenos_Aires',
-        currency: input.country === 'AR' ? 'ARS' : 'USD',
-      },
-    });
-
-    await conn.execute('BEGIN');
-    try {
-      await conn.execute(
-        `INSERT INTO "tenants" (id, created_at, updated_at, name, slug, status, plan, tax_id, settings)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [tenantId, now, now, input.name, input.subdomain, TenantStatus.TRIAL, input.plan ?? TenantPlan.FREE, input.taxId ?? null, settings],
-      );
-
-      await conn.execute(
-        `INSERT INTO "users" (id, created_at, updated_at, clerk_id, email, first_name, last_name,
-          roles, is_active, two_factor_enabled, preferences, password_hash, tenant_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [ownerId, now, now, ownerId, input.ownerEmail, input.ownerFirstName, input.ownerLastName,
-          JSON.stringify([SystemRole.OWNER]), true, false,
-          JSON.stringify({ theme: 'dark', language: 'es', timezone: input.timezone ?? 'America/Argentina/Buenos_Aires' }),
-          passwordHash, tenantId],
-      );
-
-      await conn.execute(
-        `INSERT INTO "subscriptions" (id, created_at, updated_at, tenant_id, plan, status, trial_ends_at, cancel_at_period_end)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [subId, now, now, tenantId, input.plan ?? TenantPlan.FREE, SubscriptionStatus.TRIALING, trialEndsAt, false],
-      );
-
-      await conn.execute('COMMIT');
-    } catch (err) {
-      await conn.execute('ROLLBACK');
-      throw err;
-    }
-
-    console.log('[provision] seed OK — ownerId:', ownerId);
-    return ownerId;
+    console.log('[provision] migrations OK — seeding via pg.Client on:', databaseUrl.replace(/:\/\/[^@]+@/, '://***@'));
   } finally {
     await orm.close();
   }
+
+  // Seed con pg.Client directo — conexión única, sin pool abstraction
+  const client = new pg.Client({
+    connectionString: databaseUrl,
+    ssl: { rejectUnauthorized: false },
+  });
+  await client.connect();
+  console.log('[provision] pg.Client connected, db:', (await client.query('SELECT current_database() as db')).rows[0].db);
+
+  const tenantId = crypto.randomUUID();
+  const ownerId = crypto.randomUUID();
+  const subId = crypto.randomUUID();
+  const now = new Date();
+  const trialEndsAt = new Date(now);
+  trialEndsAt.setDate(trialEndsAt.getDate() + Number(process.env['TRIAL_DAYS'] ?? 30));
+  const passwordHash = await bcrypt.hash(input.password, 10);
+  const settings = JSON.stringify({
+    locale: {
+      country: input.country ?? 'AR',
+      language: 'es',
+      timezone: input.timezone ?? 'America/Argentina/Buenos_Aires',
+      currency: input.country === 'AR' ? 'ARS' : 'USD',
+    },
+  });
+
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO "tenants" (id, created_at, updated_at, name, slug, status, plan, tax_id, settings)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [tenantId, now, now, input.name, input.subdomain, TenantStatus.TRIAL, input.plan ?? TenantPlan.FREE, input.taxId ?? null, settings],
+    );
+    await client.query(
+      `INSERT INTO "users" (id, created_at, updated_at, clerk_id, email, first_name, last_name,
+        roles, is_active, two_factor_enabled, preferences, password_hash, tenant_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [ownerId, now, now, ownerId, input.ownerEmail, input.ownerFirstName, input.ownerLastName,
+        JSON.stringify([SystemRole.OWNER]), true, false,
+        JSON.stringify({ theme: 'dark', language: 'es', timezone: input.timezone ?? 'America/Argentina/Buenos_Aires' }),
+        passwordHash, tenantId],
+    );
+    await client.query(
+      `INSERT INTO "subscriptions" (id, created_at, updated_at, tenant_id, plan, status, trial_ends_at, cancel_at_period_end)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [subId, now, now, tenantId, input.plan ?? TenantPlan.FREE, SubscriptionStatus.TRIALING, trialEndsAt, false],
+    );
+    await client.query('COMMIT');
+    console.log('[provision] seed OK — ownerId:', ownerId);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    await client.end();
+  }
+
+  return ownerId;
 }
 
 // ─── Función principal ────────────────────────────────────────────────────────

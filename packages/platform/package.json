@@ -33,6 +33,7 @@
     "@mikro-orm/migrations": "^6.4.3",
     "@mikro-orm/postgresql": "^6.4.3",
     "@mikro-orm/reflection": "^6.6.13",
+    "pg": "^8.13.3",
     "bcryptjs": "^3.0.3",
     "dotenv": "^16.6.1",
     "jose": "^6.2.2"
@@ -40,6 +41,7 @@
   "devDependencies": {
     "@mikro-orm/cli": "^6.4.3",
     "@types/bcryptjs": "^3.0.0",
+    "@types/pg": "^8.11.10",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.4",
     "typescript": "^6.0.2"
