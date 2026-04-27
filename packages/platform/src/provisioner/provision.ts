@@ -42,7 +42,7 @@ export interface ProvisionResult {
 
 // ─── Neon API ─────────────────────────────────────────────────────────────────
 
-async function createNeonDatabase(dbName: string): Promise<string> {
+async function createNeonDatabase(dbName: string): Promise<{ poolerUrl: string; directUrl: string }> {
   const apiKey = process.env['NEON_API_KEY'];
   const projectId = process.env['NEON_PROJECT_ID'];
   const branchId = process.env['NEON_BRANCH_ID'];
