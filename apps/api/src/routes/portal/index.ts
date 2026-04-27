@@ -46,8 +46,14 @@ export async function portalRoutes(app: FastifyInstance) {
         message: `Inmobiliaria "${result.data.name}" creada. Trial de 30 días activo.`,
       });
     } catch (err) {
-      app.log.error(err, 'Provisioning failed');
-      return reply.status(500).send({ error: 'Error al crear la inmobiliaria. Intente de nuevo.', code: 'PROVISION_ERROR' });
+      const msg = err instanceof Error ? err.message : String(err);
+      app.log.error({ err, msg }, 'Provisioning failed');
+      const isDev = process.env['NODE_ENV'] !== 'production';
+      return reply.status(500).send({
+        error: 'Error al crear la inmobiliaria. Intente de nuevo.',
+        code: 'PROVISION_ERROR',
+        ...(isDev && { detail: msg }),
+      });
     }
   });
 

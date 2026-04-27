@@ -23,6 +23,7 @@
     "migration:up": "tsx src/scripts/migrate-up.ts",
     "migration:down": "tsx src/scripts/migrate-down.ts",
     "seed": "tsx src/seeds/run.ts",
+    "test:provision": "tsx src/scripts/test-provision.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

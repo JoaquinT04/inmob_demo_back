@@ -23,6 +23,7 @@
     "platform:migrate": "pnpm --filter @inmob/platform migration:up",
     "platform:migrate:create": "pnpm --filter @inmob/platform migration:create",
     "platform:seed": "pnpm --filter @inmob/platform seed",
+    "platform:test-provision": "pnpm --filter @inmob/platform test:provision",
     "docker:up": "docker-compose -f docker/docker-compose.yml up -d",
     "docker:down": "docker-compose -f docker/docker-compose.yml down",
     "docker:logs": "docker-compose -f docker/docker-compose.yml logs -f"

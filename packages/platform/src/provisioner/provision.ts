@@ -57,6 +57,13 @@ async function createNeonDatabase(dbName: string): Promise<string> {
     throw new Error('NEON_API_KEY, NEON_PROJECT_ID, NEON_BRANCH_ID y NEON_DB_HOST son requeridos');
   }
 
+  const cleanHost = dbHost.replace(/\s+/g, '').replace(/\/$/, '');
+  if (!cleanHost.startsWith('postgresql://') && !cleanHost.startsWith('postgres://')) {
+    throw new Error(
+      `NEON_DB_HOST inválido: debe empezar con "postgresql://" pero es "${cleanHost.slice(0, 20)}..." — revisá el valor en las variables de entorno.`,
+    );
+  }
+
   const res = await fetch(
     `https://console.neon.tech/api/v2/projects/${projectId}/branches/${branchId}/databases`,
     {
@@ -71,8 +78,7 @@ async function createNeonDatabase(dbName: string): Promise<string> {
     throw new Error(`Neon API error (${res.status}): ${body}`);
   }
 
-  const host = dbHost.replace(/\s+/g, '').replace(/\/$/, '');
-  return `${host}/${dbName}?sslmode=require`;
+  return `${cleanHost}/${dbName}?sslmode=require`;
 }
 
 // ─── Migrations en la nueva DB ────────────────────────────────────────────────
