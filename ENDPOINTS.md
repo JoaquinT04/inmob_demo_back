@@ -1,7 +1,154 @@
 # API Endpoints — inmob_demo_back
 
 **Base URL desarrollo:** `http://localhost:3001`  
-**Base URL producción:** `https://inmob-api.onrender.com`
+**Base URL producción:** `https://inmob-demo-back.onrender.com`
+
+---
+
+## Guía de integración para el frontend
+
+### Conceptos clave
+
+Esta API es multi-tenant: cada inmobiliaria tiene su propia base de datos aislada. El frontend necesita decirle a la API con qué inmobiliaria está trabajando en cada request.
+
+Hay dos formas de identificar el tenant:
+
+| Método | Cómo | Cuándo usar |
+|--------|------|-------------|
+| **Header `X-Tenant`** | `X-Tenant: demo` | Siempre — dev, staging, producción sin DNS wildcard |
+| **Subdominio del hostname** | `demo.tudominio.com` | Producción con DNS wildcard configurado |
+
+**Por ahora el frontend siempre debe mandar `X-Tenant`.** El subdominio real se puede agregar después sin cambiar nada en el frontend.
+
+---
+
+### Flujo completo: registro de nueva inmobiliaria
+
+```
+1. Verificar slug disponible
+   GET /api/register/check-slug/garcia
+   → { available: true }
+
+2. Crear la inmobiliaria
+   POST /api/portal/provision
+   Body: { subdomain, name, ownerEmail, ownerFirstName, ownerLastName, password }
+   → { token, subdomain, message }
+      ↑ el token ya es válido — guardar y usar directamente
+
+3. Guardar en el cliente:
+   - token → localStorage / cookie httpOnly / estado global
+   - subdomain → para el header X-Tenant de todos los requests siguientes
+```
+
+---
+
+### Flujo completo: login en inmobiliaria existente
+
+```
+1. (Opcional) Listar inmobiliarias disponibles
+   GET /api/portal/tenants
+   → [{ subdomain: "demo", name: "Inmobiliaria Demo" }, ...]
+   → Mostrar selector si el usuario no sabe su subdomain
+
+2. Login
+   POST /api/auth/login
+   Headers: X-Tenant: demo
+   Body: { email, password }
+   → { token, user, tenant }
+
+3. Guardar token + hidratar estado global con user y tenant
+
+4. Al iniciar la app (si hay token guardado):
+   GET /api/auth/me
+   Headers: Authorization: Bearer <token>, X-Tenant: demo
+   → { user, tenant, permissions }
+   → Si 401: token vencido → redirigir a login
+```
+
+---
+
+### Cómo configurar los headers en el cliente HTTP
+
+#### fetch nativo
+
+```typescript
+const API_URL = 'https://inmob-demo-back.onrender.com';
+
+async function apiRequest(path: string, options: RequestInit = {}, tenant: string, token?: string) {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Tenant': tenant,
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  if (!res.ok) throw await res.json();
+  return res.json();
+}
+
+// Uso:
+const { token, user } = await apiRequest('/api/auth/login', {
+  method: 'POST',
+  body: JSON.stringify({ email, password }),
+}, 'demo');
+```
+
+#### Axios
+
+```typescript
+import axios from 'axios';
+
+const api = axios.create({ baseURL: 'https://inmob-demo-back.onrender.com' });
+
+// Interceptor — agrega headers automáticamente desde el store
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  const tenant = localStorage.getItem('tenant');
+  if (token) config.headers['Authorization'] = `Bearer ${token}`;
+  if (tenant) config.headers['X-Tenant'] = tenant;
+  return config;
+});
+
+// Interceptor — maneja 401 (token vencido)
+api.interceptors.response.use(
+  (res) => res,
+  (err) => {
+    if (err.response?.status === 401) {
+      localStorage.removeItem('token');
+      window.location.href = '/login';
+    }
+    return Promise.reject(err);
+  }
+);
+```
+
+---
+
+### Errores comunes y cómo manejarlos
+
+| Status | code | Qué mostrar |
+|--------|------|-------------|
+| 400 | `TENANT_MISSING` | "Seleccioná una inmobiliaria" |
+| 404 | `TENANT_NOT_FOUND` | "La inmobiliaria no existe" |
+| 401 | `INVALID_CREDENTIALS` | "Email o contraseña incorrectos" |
+| 401 | (token vencido) | Redirigir a login |
+| 402 | `TRIAL_EXPIRED` | Modal: "Tu período de prueba venció, activá tu plan" |
+| 403 | `FORBIDDEN` | "No tenés permiso para esta acción" |
+| 409 | `SUBDOMAIN_TAKEN` | "Ese nombre ya está en uso, elegí otro" |
+
+---
+
+### Permisos — qué puede hacer cada rol
+
+El login retorna un array `permissions` con todo lo que el usuario puede hacer. Úsalo para mostrar/ocultar elementos de la UI:
+
+```typescript
+const canCreate = permissions.includes('property:create');
+const canPublish = permissions.includes('property:publish');
+const canManageBilling = permissions.includes('billing:manage');
+```
+
+Permisos disponibles: `property:*`, `contact:*`, `crm:*`, `agenda:*`, `user:*`, `settings:*`, `billing:*`, `report:*`
 
 ---
 

@@ -213,29 +213,51 @@ em.find(Property, {})   // la DB solo tiene datos de un tenant
 
 ## 8. Provisioner — crear una nueva inmobiliaria
 
-`packages/platform/src/provisioner/provision.ts` hace todo el onboarding en un solo call:
+`packages/platform/src/provisioner/provision.ts` hace todo el onboarding en un solo call. **Funciona en producción (Render + Neon).** En local requiere credenciales de Neon.
 
 ```
-provision(input, platformOrm)
+POST /api/portal/provision
   │
-  ├─ 1. Crear DB Neon via API REST (NEON_API_KEY)
-  │      → Retorna databaseUrl de la nueva DB
+  ├─ 1. createNeonDatabase(inmob_{subdomain})
+  │      → Neon API v2: POST /projects/{id}/branches/{branchId}/databases
+  │      → Retorna: poolerUrl (para la app) + directUrl (sin -pooler, para setup)
   │
-  ├─ 2. Conectar a esa DB y ejecutar migraciones
-  │      → Crea todas las tablas del schema de tenant
+  ├─ 2. setupTenantDb(directUrl)
+  │      ├─ MikroORM.init → conecta a la DB vacía
+  │      ├─ SchemaGenerator.createSchema() → crea TODAS las tablas desde las entidades
+  │      │    (no usa archivos de migration — más robusto en producción)
+  │      └─ pg.Client → INSERT tenant + user owner + subscription (raw SQL en txn)
   │
-  ├─ 3. Crear fila Tenant en la nueva DB
-  │
-  ├─ 4. Crear User owner con bcrypt(password)
-  │
-  ├─ 5. Registrar en Platform DB: TenantRegistry
+  ├─ 3. TenantRegistry.create(poolerUrl) en Platform DB
   │      → subdomain, name, databaseUrl, ownerEmail, plan: FREE, trialEndsAt
   │
-  └─ 6. Firmar JWT { userId, subdomain }
+  └─ 4. SignJWT { userId, subdomain } → 7 días
          → Retorna { subdomain, databaseUrl, ownerId, token }
 ```
 
-En **desarrollo local**, Neon no está disponible. El seed de desarrollo crea manualmente el tenant "demo" en la Docker DB local y lo registra en la platform DB.
+### Pooler vs URL directa
+
+Neon tiene dos endpoints por proyecto:
+- `ep-xxx-pooler.region.neon.tech` — pooler PgBouncer, ideal para muchas conexiones cortas (la app)
+- `ep-xxx.region.neon.tech` — conexión directa, necesaria para DDL (CREATE TABLE, migraciones)
+
+El provisioner usa la **URL directa** para `SchemaGenerator.createSchema()` porque PgBouncer no soporta bien transacciones DDL. Luego guarda la **URL pooler** en `tenant_registry` para que la app la use en runtime.
+
+### Por qué SchemaGenerator en vez de migrator.up()
+
+En producción, los archivos `.js` de migrations están en `packages/database/dist/migrations/`. Resolver esa ruta desde el provisioner (en `packages/platform/dist/`) requiere path absolutos frágiles. `SchemaGenerator.createSchema()` lee directamente las entidades en memoria — no depende de archivos en disco, siempre crea el schema correcto.
+
+**Trade-off:** Si el schema de las entidades y las migrations divergen, los tenants nuevos tendrían un schema diferente a los existentes. Para evitarlo: cuando se agrega una migration, también actualizar las entidades (`@inmob/database/entities`).
+
+### En desarrollo local
+
+Neon no está disponible localmente. Para crear el tenant demo manualmente:
+
+```bash
+# Con Docker corriendo:
+DATABASE_URL=postgresql://inmob:inmob@localhost:5432/inmob_tenant pnpm db:migrate
+# Luego insertar en platform DB el registro del tenant demo
+```
 
 ---
 
