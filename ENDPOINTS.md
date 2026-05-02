@@ -177,11 +177,11 @@ El token se obtiene en `POST /api/auth/login`.
 ## Índice
 
 1. [Health](#health)
-2. [Portal (sin tenant)](#portal-sin-tenant)
+2. [Portal (sin tenant)](#portal-sin-tenant) — `provision`, `hub`, `hub/:id`, `plans`, `tenants`
 3. [Registro de inmobiliaria](#registro-de-inmobiliaria)
 4. [Auth](#auth)
 5. [Tenant](#tenant)
-6. [Suscripción](#suscripción)
+6. [Suscripción](#suscripción) — `plans`, `me`, `checkout`, `cancel`, `reactivate`, `webhook/mercadopago`
 7. [Propiedades](#propiedades)
 8. [Contactos](#contactos)
 9. [CRM — Leads](#crm--leads)
@@ -260,6 +260,23 @@ El `token` está listo para usar inmediatamente. El `subdomain` va en `X-Tenant`
 
 ---
 
+### `GET /api/portal/plans`
+
+Catálogo público de planes. Sin autenticación, sin X-Tenant. Útil para la página de precios del sitio.
+
+**Response 200**
+```json
+{
+  "data": [
+    { "id": "free",       "price": 0,     "currency": "USD", "interval": "month", "label": "Gratis",     "limits": { "maxUsers": 3,  "maxProperties": 20,  "canUseHub": false, "canExport": false } },
+    { "id": "pro",        "price": 29.99, "currency": "USD", "interval": "month", "label": "Pro",        "limits": { "maxUsers": 15, "maxProperties": 500, "canUseHub": true,  "canExport": true  } },
+    { "id": "enterprise", "price": 89.99, "currency": "USD", "interval": "month", "label": "Enterprise", "limits": { "maxUsers": -1, "maxProperties": -1,  "canUseHub": true,  "canExport": true  } }
+  ]
+}
+```
+
+---
+
 ### `GET /api/portal/hub`
 
 Busca propiedades publicadas en todos los tenants (índice cross-tenant). Sin autenticación.
@@ -304,9 +321,22 @@ Busca propiedades publicadas en todos los tenants (índice cross-tenant). Sin au
 
 ---
 
+### `GET /api/portal/hub/:id`
+
+Detalle de una propiedad del hub por ID. Sin autenticación.
+
+**Response 200** — objeto `HubProperty` completo.
+
+**Response 404**
+```json
+{ "error": "Propiedad no encontrada en el hub", "code": "NOT_FOUND" }
+```
+
+---
+
 ### `GET /api/portal/tenants`
 
-Lista todos los tenants activos. Útil para construir un selector de inmobiliaria en el login.
+Lista tenants activos y en trial. Útil para construir un selector de inmobiliaria en el login.
 
 **Response 200**
 ```json
@@ -547,7 +577,13 @@ Branding público de una inmobiliaria. Sin autenticación. Para la página de lo
 
 ## Suscripción
 
-Todos los endpoints de suscripción requieren permiso `billing:*` (solo `owner`).
+Los endpoints que modifican estado requieren permiso `billing:manage` (solo `owner`). Los de lectura requieren `billing:read`.
+
+### `GET /api/subscriptions/plans`
+
+Catálogo de planes. Sin autenticación. (Mismo que `/api/portal/plans`.)
+
+---
 
 ### `GET /api/subscriptions/me`
 
@@ -559,10 +595,14 @@ Estado de la suscripción del tenant. Requiere `billing:read`.
 ```json
 {
   "data": {
+    "subdomain": "demo",
     "plan": "free",
+    "planLimits": { "maxUsers": 3, "maxProperties": 20, "canUseHub": false, "canExport": false },
+    "planPricing": { "price": 0, "currency": "USD", "interval": "month", "label": "Gratis" },
     "status": "trial",
     "subscriptionStatus": "trialing",
     "trialEndsAt": "2026-05-25T00:00:00.000Z",
+    "trialDaysLeft": 23,
     "currentPeriodEnd": null,
     "cancelAtPeriodEnd": false,
     "paymentProvider": null
@@ -572,37 +612,108 @@ Estado de la suscripción del tenant. Requiere `billing:read`.
 
 ---
 
-### `POST /api/subscriptions/upgrade`
+### `POST /api/subscriptions/checkout`
 
-Sube de plan. Requiere `billing:manage`.
+Crea una sesión de pago en MercadoPago. Requiere `billing:manage`.
+
+**Headers:** `Authorization: Bearer <token>`, `X-Tenant: demo`
 
 **Body**
 ```json
-{ "plan": "pro" }
+{
+  "plan": "pro",
+  "successUrl": "https://tuapp.com/billing?status=success",
+  "failureUrl": "https://tuapp.com/billing?status=failed"
+}
 ```
+
+| Campo | Requerido | Descripción |
+|-------|-----------|-------------|
+| `plan` | ✅ | `pro` o `enterprise` |
+| `successUrl` | — | URL de redirect tras pago aprobado. Default: `/api/subscriptions/checkout/success` |
+| `failureUrl` | — | URL de redirect tras pago rechazado. Default: `/api/subscriptions/checkout/failure` |
+
+**Response 200**
+```json
+{
+  "checkoutUrl": "https://www.mercadopago.com.ar/checkout/v1/redirect?pref_id=...",
+  "preferenceId": "...",
+  "plan": "pro",
+  "pricing": { "price": 29.99, "currency": "USD", "interval": "month", "label": "Pro" }
+}
+```
+
+El frontend redirige al usuario a `checkoutUrl`. MercadoPago maneja el pago y redirige de vuelta.
+
+**Errores**
+| Status | code | Cuándo |
+|--------|------|--------|
+| 400 | — | Plan inválido |
+| 409 | `ALREADY_ON_PLAN` | Ya está en este plan y activo |
+| 502 | `CHECKOUT_ERROR` | Error al crear la preferencia en MP |
+
+---
+
+### `GET /api/subscriptions/checkout/success`
+
+MP redirige aquí tras pago aprobado. Activa el plan y redirige al frontend.
+
+→ Redirige a `FRONTEND_URL/billing?status=success&plan=pro`
+
+---
+
+### `GET /api/subscriptions/checkout/failure`
+
+MP redirige aquí tras pago rechazado.
+
+→ Redirige a `FRONTEND_URL/billing?status=failed&payment_id=...`
+
+---
+
+### `GET /api/subscriptions/checkout/pending`
+
+MP redirige aquí cuando el pago está pendiente (ej: pago en efectivo).
+
+→ Redirige a `FRONTEND_URL/billing?status=pending&payment_id=...`
 
 ---
 
 ### `POST /api/subscriptions/cancel`
 
-Cancela al fin del período. Requiere `billing:manage`.
+Cancela la suscripción al fin del período. Requiere `billing:manage`.
 
 **Response 200**
 ```json
-{ "message": "Suscripción cancelada. Activa hasta 2026-05-25." }
+{
+  "data": { "activeUntil": "2026-05-25T00:00:00.000Z" },
+  "message": "Suscripción cancelada. Acceso hasta 25/5/2026."
+}
 ```
 
 ---
 
 ### `POST /api/subscriptions/reactivate`
 
-Reactiva una cancelación. Requiere `billing:manage`.
+Revierte una cancelación pendiente (solo si `subscriptionStatus === "cancelled"`). Requiere `billing:manage`.
+
+**Response 200**
+```json
+{ "message": "Suscripción reactivada correctamente." }
+```
 
 ---
 
-### `POST /api/subscriptions/webhook`
+### `POST /api/subscriptions/webhook/mercadopago`
 
-Webhook del proveedor de pagos (Stripe / MercadoPago). Sin autenticación.
+IPN de MercadoPago. Sin autenticación. MP envía notificaciones aquí; el servidor las procesa de forma asíncrona.
+
+Responde `200` de inmediato (requerido por MP). Luego consulta el pago y actualiza el tenant según `payment.status`:
+
+| `payment.status` | Resultado |
+|-----------------|-----------|
+| `approved` | Plan activado, `subscriptionStatus: active`, período 1 mes |
+| `rejected` / `cancelled` | `subscriptionStatus: past_due` |
+| `refunded` / `charged_back` | `subscriptionStatus: expired`, `tenantStatus: suspended` |
 
 ---
 
