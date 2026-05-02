@@ -11,17 +11,11 @@
  *   NEON_API_KEY, NEON_PROJECT_ID, NEON_BASE_URL
  *   APP_SECRET (para firmar el JWT de retorno)
  */
-import { fileURLToPath } from 'url';
-import { dirname, resolve } from 'path';
 import { MikroORM } from '@mikro-orm/postgresql';
-import { Migrator } from '@mikro-orm/migrations';
 import pg from 'pg';
 import bcrypt from 'bcryptjs';
 import { SignJWT } from 'jose';
 import tenantDbConfig from '@inmob/database/config';
-
-// En producción: packages/platform/dist/provisioner/ → ../../../database/dist/migrations
-const MIGRATIONS_PATH = resolve(dirname(fileURLToPath(import.meta.url)), '../../../database/dist/migrations');
 import { TenantPlan, TenantStatus, SystemRole, SubscriptionStatus } from '@inmob/shared';
 import { TenantRegistry } from '../entities/index.js';
 import type { MikroORM as PlatformORM } from '@mikro-orm/postgresql';
@@ -102,12 +96,11 @@ async function setupTenantDb(
     ...tenantDbConfig,
     clientUrl: databaseUrl,
     driverOptions: isSsl ? { connection: { ssl: { rejectUnauthorized: false } } } : {},
-    migrations: { path: MIGRATIONS_PATH, glob: '!(*.d).js' },
   });
 
   try {
-    await orm.getMigrator().up();
-    console.log('[provision] migrations OK — seeding via pg.Client on:', databaseUrl.replace(/:\/\/[^@]+@/, '://***@'));
+    await orm.getSchemaGenerator().createSchema();
+    console.log('[provision] schema created — seeding via pg.Client on:', databaseUrl.replace(/:\/\/[^@]+@/, '://***@'));
   } finally {
     await orm.close();
   }
