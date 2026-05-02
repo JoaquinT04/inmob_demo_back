@@ -9,7 +9,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { provision } from '@inmob/platform';
 import { TenantRegistry, HubProperty } from '@inmob/platform';
-import { TenantStatus } from '@inmob/shared';
+import { TenantStatus, TenantPlan, PlanLimits, PlanPricing } from '@inmob/shared';
 
 const provisionSchema = z.object({
   subdomain: z.string().min(3).max(50).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
@@ -110,12 +110,25 @@ export async function portalRoutes(app: FastifyInstance) {
     });
   });
 
+  // ── GET /api/portal/hub/:id ──────────────────────────────────────────────
+  app.get('/hub/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const platformEm = app.platformOrm.em.fork();
+    const property = await platformEm.findOne(HubProperty, { id });
+
+    if (!property) {
+      return reply.status(404).send({ error: 'Propiedad no encontrada en el hub', code: 'NOT_FOUND' });
+    }
+
+    return reply.send({ data: property });
+  });
+
   // ── GET /api/portal/tenants ──────────────────────────────────────────────
   app.get('/tenants', async (_request, reply) => {
     const platformEm = app.platformOrm.em.fork();
     const tenants = await platformEm.find(
       TenantRegistry,
-      { status: TenantStatus.ACTIVE },
+      { status: { $in: [TenantStatus.ACTIVE, TenantStatus.TRIAL] } },
       { orderBy: { name: 'ASC' } },
     );
 
@@ -126,5 +139,17 @@ export async function portalRoutes(app: FastifyInstance) {
         logoUrl: t.logoUrl ?? null,
       })),
     });
+  });
+
+  // ── GET /api/portal/plans ─────────────────────────────────────────────────
+  // Catálogo público de planes. Mismo que /api/subscriptions/plans pero accesible
+  // sin X-Tenant (útil para la página de precios del sitio web).
+  app.get('/plans', async (_request, reply) => {
+    const plans = Object.values(TenantPlan).map((plan) => ({
+      id: plan,
+      ...PlanPricing[plan],
+      limits: PlanLimits[plan],
+    }));
+    return reply.send({ data: plans });
   });
 }

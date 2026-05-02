@@ -12,11 +12,13 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { raw } from '@mikro-orm/postgresql';
 import { Property, Tenant, User } from '@inmob/database';
+import { TenantRegistry, HubProperty } from '@inmob/platform';
 import {
   PropertyType,
   OperationType,
   PropertyStatus,
   Currency,
+  PlanLimits,
   slugify,
 } from '@inmob/shared';
 import { requireAuth } from '../../middleware/auth.js';
@@ -350,6 +352,57 @@ export async function propertyRoutes(app: FastifyInstance) {
       }
 
       await em.flush();
+
+      // ── Hub sync ─────────────────────────────────────────────────────────
+      // Sincroniza al hub global si el plan del tenant tiene canUseHub.
+      const subdomain = request.tenantSubdomain!;
+      const platformEm = app.platformOrm.em.fork();
+
+      try {
+        const registry = await platformEm.findOne(TenantRegistry, { subdomain });
+        if (registry && PlanLimits[registry.plan].canUseHub) {
+          if (publish) {
+            let hubProp = await platformEm.findOne(HubProperty, { tenantSubdomain: subdomain, externalId: property.id });
+            if (!hubProp) {
+              hubProp = platformEm.create(HubProperty, {
+                tenantSubdomain: subdomain,
+                tenantName: registry.name,
+                tenantLogoUrl: registry.logoUrl ?? undefined,
+                externalId: property.id,
+                title: property.title,
+                type: property.type,
+                operationType: property.operationType,
+                price: property.price,
+                currency: property.currency,
+                city: property.address?.city,
+                neighborhood: property.address?.neighborhood,
+                state: property.address?.state,
+                rooms: property.features?.rooms,
+                publishedAt: property.publishedAt ?? new Date(),
+                lastSyncAt: new Date(),
+              });
+            } else {
+              hubProp.title = property.title;
+              hubProp.type = property.type;
+              hubProp.operationType = property.operationType;
+              hubProp.price = property.price;
+              hubProp.currency = property.currency;
+              hubProp.city = property.address?.city;
+              hubProp.neighborhood = property.address?.neighborhood;
+              hubProp.rooms = property.features?.rooms;
+              hubProp.lastSyncAt = new Date();
+            }
+            await platformEm.flush();
+          } else {
+            // Despublicada → sacar del hub
+            const hubProp = await platformEm.findOne(HubProperty, { tenantSubdomain: subdomain, externalId: property.id });
+            if (hubProp) await platformEm.remove(hubProp).flush();
+          }
+        }
+      } catch (hubErr) {
+        // Hub sync no es crítico — loguear pero no fallar el request
+        app.log.warn({ hubErr, propertyId: property.id }, 'Hub sync failed (non-critical)');
+      }
 
       return reply.send({
         data: { id: property.id, status: property.status, publishedAt: property.publishedAt },

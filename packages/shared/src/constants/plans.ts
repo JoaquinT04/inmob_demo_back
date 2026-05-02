@@ -89,3 +89,31 @@ export const PaymentProvider = {
 } as const;
 
 export type PaymentProvider = (typeof PaymentProvider)[keyof typeof PaymentProvider];
+
+// ─── Precios por plan ─────────────────────────────────────────────────────────
+//
+// currency_id: código ISO de MercadoPago / Stripe.
+// Para ARS: configurar MP_CURRENCY=ARS y ajustar los precios vía env si es necesario.
+
+export const PlanPricing = {
+  [TenantPlan.FREE]: {
+    price: 0,
+    currency: 'USD',
+    interval: 'month' as const,
+    label: 'Gratis',
+  },
+  [TenantPlan.PRO]: {
+    price: 29.99,
+    currency: 'USD',
+    interval: 'month' as const,
+    label: 'Pro',
+  },
+  [TenantPlan.ENTERPRISE]: {
+    price: 89.99,
+    currency: 'USD',
+    interval: 'month' as const,
+    label: 'Enterprise',
+  },
+} as const;
+
+export type PlanPricing = (typeof PlanPricing)[TenantPlan];
