@@ -3,17 +3,17 @@
  *
  * Modos de uso:
  *
- *   # Modo FULL (crea DB en Neon + migra + crea tenant + registra en Platform DB)
+ *   # Modo FULL (crea DB en PostgreSQL self-hosted + migra + crea tenant + registra en Platform DB)
  *   pnpm --filter @inmob/platform tsx src/scripts/test-provision.ts full
  *
- *   # Modo SKIP_NEON (usa DB_URL que ya existe, útil para testear sin Neon API)
- *   TENANT_DB_URL=postgresql://... pnpm --filter @inmob/platform tsx src/scripts/test-provision.ts skip-neon
+ *   # Modo SKIP_CREATE (usa DB_URL que ya existe, útil para testear sin crear DB)
+ *   TENANT_DB_URL=postgresql://... pnpm --filter @inmob/platform tsx src/scripts/test-provision.ts skip-create
  *
  * Variables de entorno requeridas:
  *   - PLATFORM_DATABASE_URL        (siempre)
  *   - APP_SECRET                   (siempre)
- *   - En modo FULL: NEON_API_KEY, NEON_PROJECT_ID, NEON_BRANCH_ID, NEON_DB_HOST
- *   - En modo skip-neon: TENANT_DB_URL (la URL de la DB ya existente)
+ *   - En modo FULL: POSTGRES_ADMIN_URL (ej: postgresql://inmob:pass@localhost:5432)
+ *   - En modo skip-create: TENANT_DB_URL (la URL de la DB ya existente)
  */
 import { MikroORM } from '@mikro-orm/postgresql';
 import { TsMorphMetadataProvider } from '@mikro-orm/reflection';
@@ -61,44 +61,38 @@ console.log('      OK');
 
 let databaseUrl: string;
 
-if (mode === 'skip-neon') {
+if (mode === 'skip-create') {
   databaseUrl = process.env['TENANT_DB_URL'] ?? '';
   if (!databaseUrl) {
-    console.error('ERROR: TENANT_DB_URL es requerida en modo skip-neon');
+    console.error('ERROR: TENANT_DB_URL es requerida en modo skip-create');
     process.exit(1);
   }
   console.log('[2/5] SKIP: usando DB URL existente');
 } else {
-  console.log('[2/5] Creando base de datos en Neon...');
-  const apiKey = process.env['NEON_API_KEY'];
-  const projectId = process.env['NEON_PROJECT_ID'];
-  const branchId = process.env['NEON_BRANCH_ID'];
-  const dbHost = process.env['NEON_DB_HOST'];
+  console.log('[2/5] Creando base de datos en PostgreSQL self-hosted...');
+  const adminUrl = process.env['POSTGRES_ADMIN_URL'];
 
-  if (!apiKey || !projectId || !branchId || !dbHost) {
-    console.error('Faltan vars: NEON_API_KEY, NEON_PROJECT_ID, NEON_BRANCH_ID, NEON_DB_HOST');
-    console.error('Probá: tsx src/scripts/test-provision.ts skip-neon con TENANT_DB_URL=...');
+  if (!adminUrl) {
+    console.error('Falta var: POSTGRES_ADMIN_URL (ej: postgresql://inmob:pass@localhost:5432)');
+    console.error('Probá: tsx src/scripts/test-provision.ts skip-create con TENANT_DB_URL=...');
     process.exit(1);
   }
 
   const dbName = `inmob_${input.subdomain.replace(/-/g, '_')}`;
-  const res = await fetch(
-    `https://console.neon.tech/api/v2/projects/${projectId}/branches/${branchId}/databases`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ database: { name: dbName, owner_name: process.env['NEON_DB_OWNER'] ?? 'neondb_owner' } }),
-    },
-  );
-
-  if (!res.ok) {
-    const body = await res.text();
-    console.error(`Neon API error (${res.status}):`, body);
-    process.exit(1);
+  const cleanUrl = adminUrl.replace(/\s+/g, '').replace(/\/$/, '');
+  const { Client } = (await import('pg')).default;
+  const adminClient = new Client({ connectionString: `${cleanUrl}/postgres` });
+  await adminClient.connect();
+  try {
+    const { rows } = await adminClient.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [dbName]);
+    if (rows.length === 0) {
+      await adminClient.query(`CREATE DATABASE "${dbName}"`);
+    }
+  } finally {
+    await adminClient.end();
   }
 
-  const host = dbHost.replace(/\s+/g, '').replace(/\/$/, '');
-  databaseUrl = `${host}/${dbName}?sslmode=require`;
+  databaseUrl = `${cleanUrl}/${dbName}`;
   console.log('      DB creada:', dbName);
 }
 

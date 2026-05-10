@@ -1,7 +1,7 @@
 /**
  * /api/portal — Endpoints del portal central (sin tenant routing).
  *
- * POST /api/portal/provision  → Crear nueva inmobiliaria (provisioning Neon + registro platform)
+ * POST /api/portal/provision  → Crear nueva inmobiliaria (provisioning DB + registro platform)
  * GET  /api/portal/hub        → Buscar propiedades publicadas en todos los tenants
  * GET  /api/portal/tenants    → Listar tenants activos (para selector de login)
  */
@@ -56,23 +56,19 @@ export async function portalRoutes(app: FastifyInstance) {
     }
   });
 
-  // ── GET /api/portal/neon-check ──────────────────────────────────────────
-  app.get('/neon-check', async (_request, reply) => {
+  // ── GET /api/portal/pg-check ─────────────────────────────────────────────
+  app.get('/pg-check', async (_request, reply) => {
+    const adminUrl = process.env['POSTGRES_ADMIN_URL'] ?? '';
     const vars = {
-      NEON_API_KEY: process.env['NEON_API_KEY'] ? `set (${process.env['NEON_API_KEY'].slice(0, 8)}...)` : 'MISSING',
-      NEON_PROJECT_ID: process.env['NEON_PROJECT_ID'] ?? 'MISSING',
-      NEON_BRANCH_ID: process.env['NEON_BRANCH_ID'] ?? 'MISSING',
-      NEON_DB_HOST: (() => {
-        const h = process.env['NEON_DB_HOST'] ?? '';
-        if (!h) return 'MISSING';
-        const clean = h.replace(/\s+/g, '');
+      POSTGRES_ADMIN_URL: (() => {
+        if (!adminUrl) return 'MISSING';
+        const clean = adminUrl.replace(/\s+/g, '');
         const valid = clean.startsWith('postgresql://') || clean.startsWith('postgres://');
-        return `${valid ? 'OK' : 'INVALID'} — starts with: "${h.slice(0, 25).replace(/\n/g, '\\n')}"`;
+        return `${valid ? 'OK' : 'INVALID'} — starts with: "${adminUrl.slice(0, 30).replace(/\n/g, '\\n')}"`;
       })(),
-      NEON_DB_OWNER: process.env['NEON_DB_OWNER'] ?? 'neondb_owner (default)',
       PLATFORM_DATABASE_URL: process.env['PLATFORM_DATABASE_URL'] ? `set (${process.env['PLATFORM_DATABASE_URL'].slice(0, 30)}...)` : 'MISSING',
     };
-    return reply.send({ neonConfig: vars });
+    return reply.send({ pgConfig: vars });
   });
 
   // ── GET /api/portal/hub ──────────────────────────────────────────────────
