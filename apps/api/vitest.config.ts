@@ -22,9 +22,6 @@ export default defineConfig({
     testTimeout: 15000,
     fileParallelism: false,
     pool: 'forks',
-    forks: {
-      singleFork: true,
-      execArgv: ['--max-old-space-size=2048'],
-    },
+    execArgv: ['--max-old-space-size=2048'],
   },
 });
