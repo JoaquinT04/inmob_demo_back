@@ -14,6 +14,8 @@ import {
   Lead,
   Agenda,
   PortalConnection,
+  RefreshToken,
+  PasswordResetToken,
 } from './entities/index.js';
 
 const isSsl = process.env['DATABASE_URL']?.includes('sslmode=require');
@@ -23,7 +25,7 @@ export default defineConfig({
   clientUrl: process.env['DATABASE_URL'],
   driverOptions: isSsl ? { connection: { ssl: { rejectUnauthorized: false } } } : {},
   metadataProvider: TsMorphMetadataProvider,
-  entities: [Tenant, User, Subscription, Property, Contact, Lead, Agenda, PortalConnection],
+  entities: [Tenant, User, Subscription, Property, Contact, Lead, Agenda, PortalConnection, RefreshToken, PasswordResetToken],
   debug: process.env['NODE_ENV'] === 'development',
   extensions: [Migrator],
   migrations: {

@@ -7,3 +7,5 @@ export { Contact } from './Contact.entity.js';
 export { Lead } from './Lead.entity.js';
 export { Agenda } from './Agenda.entity.js';
 export { PortalConnection } from './PortalConnection.entity.js';
+export { RefreshToken } from './RefreshToken.entity.js';
+export { PasswordResetToken } from './PasswordResetToken.entity.js';
