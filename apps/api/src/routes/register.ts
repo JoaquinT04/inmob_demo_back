@@ -21,7 +21,7 @@ const registerSchema = z.object({
   taxId: z.string().max(20).optional(),
   country: z.string().length(2).default('AR'),
   timezone: z.string().default('America/Argentina/Buenos_Aires'),
-  password: z.string().min(6),
+  password: z.string().min(8).max(128),
 });
 
 export async function registerRoutes(app: FastifyInstance) {

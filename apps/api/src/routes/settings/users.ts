@@ -23,7 +23,7 @@ const updateUserSchema = z.object({
     deny: z.array(z.string()),
   }).optional(),
   isActive: z.boolean().optional(),
-  password: z.string().min(4).optional(),
+  password: z.string().min(8).max(128).optional(),
 });
 
 export async function usersSettingsRoutes(app: FastifyInstance) {
@@ -169,7 +169,7 @@ export async function usersSettingsRoutes(app: FastifyInstance) {
       if (groups !== undefined) user.groups = groups as SystemGroup[];
       if (permissionOverrides !== undefined) user.permissionOverrides = permissionOverrides as never;
       if (isActive !== undefined) user.isActive = isActive;
-      if (password) user.passwordHash = await bcrypt.hash(password, 10);
+      if (password) user.passwordHash = await bcrypt.hash(password, 12);
 
       await em.flush();
 
