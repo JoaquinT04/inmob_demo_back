@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from 'crypto';
 import { jwtVerify, SignJWT } from 'jose';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { User } from '@inmob/database';
@@ -19,19 +20,43 @@ const APP_SECRET = new TextEncoder().encode(
   process.env['APP_SECRET'] ?? 'dev-secret-inmob-change-in-production-32chars',
 );
 
-const TOKEN_EXPIRY = process.env['JWT_EXPIRY'] ?? '7d';
+export const TOKEN_HMAC_SECRET =
+  process.env['TOKEN_HMAC_SECRET'] ??
+  (process.env['NODE_ENV'] !== 'production'
+    ? 'dev-token-hmac-secret-change-in-production'
+    : (() => { throw new Error('TOKEN_HMAC_SECRET env var required in production'); })());
+
+const ACCESS_TOKEN_EXPIRY = '15m';
+const REFRESH_TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 días
 
 export interface TokenPayload {
   userId: string;
   subdomain: string;
 }
 
-export async function signToken(payload: TokenPayload): Promise<string> {
+export async function signAccessToken(payload: TokenPayload): Promise<string> {
   return new SignJWT({ ...payload })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime(TOKEN_EXPIRY)
+    .setExpirationTime(ACCESS_TOKEN_EXPIRY)
     .sign(APP_SECRET);
+}
+
+/** Genera refresh token raw (64 char hex) y su HMAC para almacenar en DB */
+export function generateRefreshToken(): { raw: string; hash: string; expiresAt: Date } {
+  const raw = randomBytes(32).toString('hex');
+  const hash = createHmac('sha256', TOKEN_HMAC_SECRET).update(raw).digest('hex');
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS);
+  return { raw, hash, expiresAt };
+}
+
+export function hashRefreshToken(raw: string): string {
+  return createHmac('sha256', TOKEN_HMAC_SECRET).update(raw).digest('hex');
+}
+
+/** @deprecated usar signAccessToken — mantenido para compatibilidad con provisioner */
+export async function signToken(payload: TokenPayload): Promise<string> {
+  return signAccessToken(payload);
 }
 
 async function verifyAppToken(token: string): Promise<TokenPayload> {
@@ -63,18 +88,3 @@ export async function requireAuth(request: FastifyRequest, reply: FastifyReply) 
   }
 }
 
-export async function requireAuthDev(request: FastifyRequest, reply: FastifyReply) {
-  if (process.env['NODE_ENV'] !== 'development') {
-    return requireAuth(request, reply);
-  }
-
-  const devUserId = request.headers['x-dev-user-id'] as string | undefined;
-  const devSubdomain = request.headers['x-dev-subdomain'] as string | undefined;
-
-  if (devUserId && devSubdomain) {
-    request.auth = { userId: devUserId, subdomain: devSubdomain };
-    return;
-  }
-
-  return requireAuth(request, reply);
-}

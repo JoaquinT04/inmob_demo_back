@@ -1,30 +1,38 @@
+import { createHash } from 'crypto';
 import { MikroORM, PostgreSqlDriver } from '@mikro-orm/postgresql';
 import { TsMorphMetadataProvider } from '@mikro-orm/reflection';
 import {
   Tenant, User, Subscription, Property, Contact, Lead, Agenda, PortalConnection,
+  RefreshToken, PasswordResetToken,
 } from '@inmob/database';
 
-const TENANT_ENTITIES = [Tenant, User, Subscription, Property, Contact, Lead, Agenda, PortalConnection];
+const TENANT_ENTITIES = [
+  Tenant, User, Subscription, Property, Contact, Lead, Agenda, PortalConnection,
+  RefreshToken, PasswordResetToken,
+];
 
 class TenantConnectionManager {
   private cache = new Map<string, MikroORM>();
 
+  private cacheKey(url: string): string {
+    return createHash('sha256').update(url).digest('hex');
+  }
+
   async get(databaseUrl: string): Promise<MikroORM> {
-    const cached = this.cache.get(databaseUrl);
+    const key = this.cacheKey(databaseUrl);
+    const cached = this.cache.get(key);
     if (cached) return cached;
 
-    const isSsl = databaseUrl.includes('sslmode=require');
     const orm = await MikroORM.init<PostgreSqlDriver>({
       driver: PostgreSqlDriver,
       clientUrl: databaseUrl,
-      driverOptions: isSsl ? { connection: { ssl: { rejectUnauthorized: false } } } : {},
       metadataProvider: TsMorphMetadataProvider,
       entities: TENANT_ENTITIES,
       debug: false,
       allowGlobalContext: false,
     });
 
-    this.cache.set(databaseUrl, orm);
+    this.cache.set(key, orm);
     return orm;
   }
 
