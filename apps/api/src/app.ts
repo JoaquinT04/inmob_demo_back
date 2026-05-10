@@ -15,6 +15,7 @@ import { crmRoutes } from './routes/crm/index.js';
 import { agendaRoutes } from './routes/agenda/index.js';
 import { settingsRoutes } from './routes/settings/index.js';
 import { portalRoutes } from './routes/portal/index.js';
+import { googleOAuthRoutes } from './routes/auth-google.js';
 import { registerTenantRoutingHook } from './hooks/tenant-routing.js';
 
 declare module 'fastify' {
@@ -56,9 +57,21 @@ export async function buildApp({ orm, platformOrm }: { orm: MikroORM; platformOr
   registerTenantRoutingHook(app);
 
   // ── Plugins de seguridad ─────────────────────────────────────────────────
-  await app.register(helmet, { contentSecurityPolicy: false });
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
+  });
+
+  const corsOrigin = process.env['CORS_ORIGIN'];
+  if (!corsOrigin && process.env['NODE_ENV'] === 'production') {
+    throw new Error('CORS_ORIGIN env var is required in production');
+  }
   await app.register(cors, {
-    origin: process.env['CORS_ORIGIN']?.split(',') ?? true,
+    origin: corsOrigin?.split(',') ?? false,
     credentials: true,
   });
 
@@ -66,6 +79,7 @@ export async function buildApp({ orm, platformOrm }: { orm: MikroORM; platformOr
   await app.register(healthRoutes, { prefix: '/health' });
   await app.register(registerRoutes, { prefix: '/api/register' });
   await app.register(authRoutes, { prefix: '/api/auth' });
+  await app.register(googleOAuthRoutes, { prefix: '/api/auth' });
   await app.register(tenantRoutes, { prefix: '/api/tenants' });
   await app.register(subscriptionRoutes, { prefix: '/api/subscriptions' });
   await app.register(propertyRoutes, { prefix: '/api/properties' });
@@ -76,10 +90,11 @@ export async function buildApp({ orm, platformOrm }: { orm: MikroORM; platformOr
   await app.register(portalRoutes, { prefix: '/api/portal' });
 
   // ── Error handler global ─────────────────────────────────────────────────
-  app.setErrorHandler((error: Error & { statusCode?: number }, _req, reply) => {
-    app.log.error(error);
-    reply.status((error as { statusCode?: number }).statusCode ?? 500).send({
-      error: error.message ?? 'Error interno',
+  app.setErrorHandler((error: Error & { statusCode?: number }, req, reply) => {
+    app.log.error({ err: error, url: req.url }, 'Unhandled error');
+    const isProd = process.env['NODE_ENV'] === 'production';
+    reply.status(error.statusCode ?? 500).send({
+      error: isProd ? 'Error interno del servidor' : (error.message ?? 'Error interno'),
       code: 'INTERNAL_ERROR',
     });
   });
