@@ -20,10 +20,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: inmob_redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme_redis_pass}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme_redis_pass}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -41,6 +42,7 @@ services:
       PORT: 3001
       PLATFORM_DATABASE_URL: postgresql://${POSTGRES_USER:-inmob}:${POSTGRES_PASSWORD:-inmob_pass}@postgres:5432/${POSTGRES_DB:-inmob_platform}
       POSTGRES_ADMIN_URL: postgresql://${POSTGRES_USER:-inmob}:${POSTGRES_PASSWORD:-inmob_pass}@postgres:5432
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme_redis_pass}@redis:6379
     expose:
       - "3001"
     depends_on:
