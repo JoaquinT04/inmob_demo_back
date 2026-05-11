@@ -1,129 +1,43 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { getRedis } from '../lib/redis.js';
 
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
+// ── Login: 5 attempts per IP per 5 min ────────────────────────────────────────
 
-const MAX_ATTEMPTS = 5;
-const WINDOW_MS = 5 * 60 * 1000; // 5 min
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_WINDOW_S = 5 * 60;
 
-const store = new Map<string, RateLimitEntry>();
+export async function recordFailedAttempt(ip: string): Promise<{ blocked: boolean; retryAfterSeconds: number }> {
+  try {
+    const redis = getRedis();
+    const key = `rl:login:${ip}`;
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, LOGIN_WINDOW_S);
 
-// Limpiar entradas expiradas cada 10 min para evitar memory leak
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of store.entries()) {
-    if (now > entry.resetAt) store.delete(key);
-  }
-}, 10 * 60 * 1000);
-
-export function recordFailedAttempt(ip: string): { blocked: boolean; retryAfterSeconds: number } {
-  const now = Date.now();
-  const entry = store.get(ip);
-
-  if (!entry || now > entry.resetAt) {
-    store.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+    if (count > MAX_LOGIN_ATTEMPTS) {
+      const ttl = await redis.ttl(key);
+      return { blocked: true, retryAfterSeconds: Math.max(ttl, 0) };
+    }
     return { blocked: false, retryAfterSeconds: 0 };
-  }
-
-  entry.count++;
-
-  if (entry.count > MAX_ATTEMPTS) {
-    return { blocked: true, retryAfterSeconds: Math.ceil((entry.resetAt - now) / 1000) };
-  }
-
-  return { blocked: false, retryAfterSeconds: 0 };
-}
-
-export function isBlocked(ip: string): { blocked: boolean; retryAfterSeconds: number } {
-  const now = Date.now();
-  const entry = store.get(ip);
-
-  if (!entry || now > entry.resetAt) return { blocked: false, retryAfterSeconds: 0 };
-
-  if (entry.count >= MAX_ATTEMPTS) {
-    return { blocked: true, retryAfterSeconds: Math.ceil((entry.resetAt - now) / 1000) };
-  }
-
-  return { blocked: false, retryAfterSeconds: 0 };
-}
-
-export function clearAttempts(ip: string): void {
-  store.delete(ip);
-}
-
-// ── Password recovery rate limiting ────────────────────────────────────────
-
-interface PasswordRecoveryEntry {
-  count: number;
-  resetAt: number;
-}
-
-const MAX_FORGOT_ATTEMPTS = 3;
-const MAX_RESET_ATTEMPTS = 5;
-const FORGOT_WINDOW_MS = 60 * 60 * 1000;
-const RESET_WINDOW_MS = 60 * 60 * 1000;
-
-const forgotStore = new Map<string, PasswordRecoveryEntry>();
-const resetStore = new Map<string, PasswordRecoveryEntry>();
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, e] of forgotStore.entries()) if (now > e.resetAt) forgotStore.delete(k);
-  for (const [k, e] of resetStore.entries()) if (now > e.resetAt) resetStore.delete(k);
-}, 30 * 60 * 1000);
-
-export async function rateLimitForgotPassword(request: FastifyRequest, reply: FastifyReply) {
-  const email = (request.body as { email?: string } | undefined)?.email;
-  if (!email) return;
-
-  const now = Date.now();
-  const entry = forgotStore.get(email);
-
-  if (!entry || now > entry.resetAt) {
-    forgotStore.set(email, { count: 1, resetAt: now + FORGOT_WINDOW_MS });
-    return;
-  }
-
-  entry.count++;
-  if (entry.count > MAX_FORGOT_ATTEMPTS) {
-    const retryAfterSeconds = Math.ceil((entry.resetAt - now) / 1000);
-    reply.header('Retry-After', String(retryAfterSeconds));
-    return reply.status(429).send({
-      error: 'Demasiados intentos de recuperación. Intentá de nuevo en una hora.',
-      code: 'RATE_LIMITED',
-      retryAfterSeconds,
-    });
+  } catch {
+    return { blocked: false, retryAfterSeconds: 0 }; // fail open if Redis is down
   }
 }
 
-export async function rateLimitResetPassword(request: FastifyRequest, reply: FastifyReply) {
-  const ip = request.ip;
-  const now = Date.now();
-  const entry = resetStore.get(ip);
-
-  if (!entry || now > entry.resetAt) {
-    resetStore.set(ip, { count: 1, resetAt: now + RESET_WINDOW_MS });
-    return;
-  }
-
-  entry.count++;
-  if (entry.count > MAX_RESET_ATTEMPTS) {
-    const retryAfterSeconds = Math.ceil((entry.resetAt - now) / 1000);
-    reply.header('Retry-After', String(retryAfterSeconds));
-    return reply.status(429).send({
-      error: 'Demasiados intentos de restablecimiento. Intentá de nuevo en una hora.',
-      code: 'RATE_LIMITED',
-      retryAfterSeconds,
-    });
+export async function isBlocked(ip: string): Promise<{ blocked: boolean; retryAfterSeconds: number }> {
+  try {
+    const redis = getRedis();
+    const key = `rl:login:${ip}`;
+    const count = await redis.get(key);
+    if (!count || parseInt(count, 10) <= MAX_LOGIN_ATTEMPTS) return { blocked: false, retryAfterSeconds: 0 };
+    const ttl = await redis.ttl(key);
+    return { blocked: true, retryAfterSeconds: Math.max(ttl, 0) };
+  } catch {
+    return { blocked: false, retryAfterSeconds: 0 };
   }
 }
 
 export async function rateLimitLogin(request: FastifyRequest, reply: FastifyReply) {
-  const ip = request.ip;
-  const { blocked, retryAfterSeconds } = isBlocked(ip);
-
+  const { blocked, retryAfterSeconds } = await isBlocked(request.ip);
   if (blocked) {
     reply.header('Retry-After', String(retryAfterSeconds));
     return reply.status(429).send({
@@ -131,5 +45,60 @@ export async function rateLimitLogin(request: FastifyRequest, reply: FastifyRepl
       code: 'RATE_LIMITED',
       retryAfterSeconds,
     });
+  }
+}
+
+// ── Forgot-password: 3 attempts per email per hour ────────────────────────────
+
+const MAX_FORGOT_ATTEMPTS = 3;
+const FORGOT_WINDOW_S = 60 * 60;
+
+export async function rateLimitForgotPassword(request: FastifyRequest, reply: FastifyReply) {
+  const email = (request.body as { email?: string } | undefined)?.email;
+  if (!email) return;
+
+  try {
+    const redis = getRedis();
+    const key = `rl:forgot:${email.toLowerCase().slice(0, 254)}`;
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, FORGOT_WINDOW_S);
+
+    if (count > MAX_FORGOT_ATTEMPTS) {
+      const retryAfterSeconds = Math.max(await redis.ttl(key), 0);
+      reply.header('Retry-After', String(retryAfterSeconds));
+      return reply.status(429).send({
+        error: 'Demasiados intentos de recuperación. Intentá de nuevo en una hora.',
+        code: 'RATE_LIMITED',
+        retryAfterSeconds,
+      });
+    }
+  } catch {
+    // fail open — better to allow the request than block all users if Redis is down
+  }
+}
+
+// ── Reset-password: 5 attempts per IP per hour ────────────────────────────────
+
+const MAX_RESET_ATTEMPTS = 5;
+const RESET_WINDOW_S = 60 * 60;
+
+export async function rateLimitResetPassword(request: FastifyRequest, reply: FastifyReply) {
+  try {
+    const redis = getRedis();
+    const key = `rl:reset:${request.ip}`;
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, RESET_WINDOW_S);
+
+    if (count > MAX_RESET_ATTEMPTS) {
+      const retryAfterSeconds = Math.max(await redis.ttl(key), 0);
+      reply.header('Retry-After', String(retryAfterSeconds));
+      return reply.status(429).send({
+        error: 'Demasiados intentos de restablecimiento. Intentá de nuevo en una hora.',
+        code: 'RATE_LIMITED',
+        retryAfterSeconds,
+      });
+    }
+  } catch {
+    // fail open
   }
 }

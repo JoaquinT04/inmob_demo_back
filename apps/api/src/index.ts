@@ -3,6 +3,7 @@ import mikroOrmConfig from '@inmob/database/config';
 import platformConfig from '@inmob/platform/config';
 import { buildApp } from './app.js';
 import { connectionManager } from './lib/connection-manager.js';
+import { closeRedis } from './lib/redis.js';
 
 const orm = await MikroORM.init(mikroOrmConfig);
 const platformOrm = await MikroORM.init(platformConfig);
@@ -20,6 +21,7 @@ const shutdown = async () => {
   await orm.close();
   await platformOrm.close();
   await connectionManager.closeAll();
+  await closeRedis();
 };
 
 process.on('SIGINT', shutdown);
